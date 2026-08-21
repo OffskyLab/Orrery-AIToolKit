@@ -23,9 +23,9 @@ struct AIToolRegistryTests {
     }
 
     @Test("registered tools are retrievable by id")
-    func registerAndLookUp() {
+    func registerAndLookUp() throws {
         let registry = AIToolRegistry()
-        registry.register(tool("claude"))
+        try registry.register(tool("claude"))
 
         #expect(!registry.isEmpty)
         #expect(registry.tool(id: "claude")?.id == "claude")
@@ -35,9 +35,9 @@ struct AIToolRegistryTests {
     /// A registry holds `any AITool`, so what comes back out has to still carry
     /// the conformer's own answers — including the ones it left to the defaults.
     @Test("a conformer survives the round trip through the registry")
-    func conformerRoundTrips() {
+    func conformerRoundTrips() throws {
         let registry = AIToolRegistry()
-        registry.register(TestTool(id: "codex", displayName: "Codex CLI"))
+        try registry.register(TestTool(id: "codex", displayName: "Codex CLI"))
 
         let recovered = registry.tool(id: "codex")
         #expect(recovered?.id == "codex")
@@ -49,20 +49,20 @@ struct AIToolRegistryTests {
     /// Several call sites iterate tools to build user-facing output. Arbitrary
     /// order would make that output differ run to run.
     @Test("all is sorted by id regardless of registration order")
-    func allIsSorted() {
+    func allIsSorted() throws {
         let registry = AIToolRegistry()
-        registry.register(tool("gemini"))
-        registry.register(tool("claude"))
-        registry.register(tool("codex"))
+        try registry.register(tool("gemini"))
+        try registry.register(tool("claude"))
+        try registry.register(tool("codex"))
 
         #expect(registry.all.map(\.id) == ["claude", "codex", "gemini"])
     }
 
     @Test("registering the same id again replaces the description")
-    func reregisterReplaces() {
+    func reregisterReplaces() throws {
         let registry = AIToolRegistry()
-        registry.register(tool("claude"))
-        registry.register(TestTool(
+        try registry.register(tool("claude"))
+        try registry.register(TestTool(
             id: "claude",
             displayName: "Claude Code",
             configDirEnvVar: "CLAUDE_CONFIG_DIR"
@@ -74,11 +74,68 @@ struct AIToolRegistryTests {
     }
 
     @Test("reset clears everything")
-    func reset() {
+    func reset() throws {
         let registry = AIToolRegistry()
-        registry.register(tool("claude"))
+        try registry.register(tool("claude"))
         registry.reset()
 
         #expect(registry.isEmpty)
+    }
+
+    // MARK: - Id validation
+
+    /// A well-formed id is the uninteresting case, asserted so the rejections
+    /// below are known to be about the id and not about registration itself.
+    @Test("a valid id registers without complaint")
+    func validIDRegisters() throws {
+        let registry = AIToolRegistry()
+        try registry.register(tool("claude"))
+
+        #expect(registry.tool(id: "claude")?.id == "claude")
+    }
+
+    /// An empty id names nothing and collides with the next empty one.
+    @Test("an empty id is refused")
+    func emptyIDIsRefused() {
+        let registry = AIToolRegistry()
+
+        #expect(throws: AIToolRegistry.RegistrationError.invalidID("", reason: .empty)) {
+            try registry.register(tool(""))
+        }
+    }
+
+    /// Hosts write ids into line-based records and path-like locations. None of
+    /// these survives the round trip: a space is trimmed off on read, a newline
+    /// splits one id into two records, a tab is both.
+    @Test(
+        "an id carrying whitespace or a newline is refused",
+        arguments: ["a b", "a\nb", "a\tb", "cursor "]
+    )
+    func whitespaceIDIsRefused(id: String) {
+        let registry = AIToolRegistry()
+
+        #expect(
+            throws: AIToolRegistry.RegistrationError.invalidID(
+                id, reason: .containsWhitespaceOrNewline
+            )
+        ) {
+            try registry.register(tool(id))
+        }
+    }
+
+    /// Rejection must not be half-done. Validation runs before the lock, so
+    /// there is no window in which the bad id was stored and then removed.
+    @Test("a refused registration leaves the registry untouched")
+    func refusedRegistrationChangesNothing() {
+        let registry = AIToolRegistry()
+
+        #expect(throws: AIToolRegistry.RegistrationError.self) {
+            try registry.register(tool("cursor\nclaude"))
+        }
+
+        #expect(registry.isEmpty)
+        #expect(registry.all.isEmpty)
+        #expect(registry.tool(id: "claude") == nil)
+        #expect(registry.tool(id: "cursor\nclaude") == nil)
     }
 }

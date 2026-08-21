@@ -1,3 +1,4 @@
+import Foundation
 import Synchronization
 
 /// Which tools exist, according to what has been registered.
@@ -25,6 +26,20 @@ import Synchronization
 /// unreachable except through `withLock`.
 public final class AIToolRegistry: Sendable {
 
+    /// Why a tool could not be registered.
+    public enum RegistrationError: Error, Equatable, Sendable {
+
+        /// The tool's ``AITool/id`` is not something a host can write down.
+        /// Carries the offending id exactly as offered, so a diagnostic can
+        /// show it rather than describe it.
+        case invalidID(String, reason: Reason)
+
+        public enum Reason: Equatable, Sendable {
+            case empty
+            case containsWhitespaceOrNewline
+        }
+    }
+
     /// The registry a host application registers into at startup.
     public static let shared = AIToolRegistry()
 
@@ -33,8 +48,25 @@ public final class AIToolRegistry: Sendable {
     public init() {}
 
     /// Registers `tool`, replacing any existing description with the same id.
-    public func register(_ tool: any AITool) {
-        storage.withLock { $0[tool.id] = tool }
+    ///
+    /// Throws ``RegistrationError`` when the id is empty or contains
+    /// whitespace or a newline — see ``AITool/id`` for why those cannot be
+    /// stored. A rejected registration leaves the registry exactly as it was;
+    /// there is no partial state to unwind, because validation happens before
+    /// the lock is taken. Keeping it outside `withLock` is deliberate on two
+    /// counts: nothing here needs the table to decide, and throwing out of a
+    /// critical section is a habit worth not forming.
+    public func register(_ tool: any AITool) throws {
+        let id = tool.id
+        guard !id.isEmpty else {
+            throw RegistrationError.invalidID(id, reason: .empty)
+        }
+        guard id.unicodeScalars.allSatisfy({ !CharacterSet.whitespacesAndNewlines.contains($0) })
+        else {
+            throw RegistrationError.invalidID(id, reason: .containsWhitespaceOrNewline)
+        }
+
+        storage.withLock { $0[id] = tool }
     }
 
     public func tool(id: String) -> (any AITool)? {

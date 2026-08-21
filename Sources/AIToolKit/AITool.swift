@@ -30,6 +30,23 @@ public protocol AITool: Sendable {
 
     /// Stable identifier. Also the on-disk value and, typically, the directory
     /// segment a host uses for this tool.
+    ///
+    /// Must be non-empty and free of whitespace and newlines;
+    /// ``AIToolRegistry/register(_:)`` rejects anything else rather than
+    /// storing it.
+    ///
+    /// That restriction is not tidiness. An id is the *only* part of a tool
+    /// description that leaves the process: hosts write it into line-based
+    /// records and path-like locations, neither of which can represent these
+    /// characters. An id containing a newline is read back as two records —
+    /// orrery's per-tool migration flag stores one id per line, so an id of
+    /// `"cursor\nclaude"` silently marks claude's one-shot migration complete
+    /// on that machine, permanently. An id with a trailing space is written
+    /// verbatim and read back trimmed, so it never matches itself and the
+    /// migration it guards re-runs on every invocation, forever. Neither
+    /// failure is visible where it is caused, which is why the framework that
+    /// accepts ids it does not control refuses them at the boundary instead of
+    /// leaving every host to rediscover the rule.
     var id: String { get }
 
     /// Human-facing name, e.g. "Claude Code".

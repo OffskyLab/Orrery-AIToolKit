@@ -23,8 +23,16 @@ struct CodexTool: AITool {
 }
 // configDirectoryName == ".codex", configDirEnvVar == nil, installCommand == nil, …
 
-AIToolRegistry.shared.register(CodexTool())
+try AIToolRegistry.shared.register(CodexTool())
 ```
+
+`register` throws when the id is empty or carries whitespace or a newline.
+The id is the one part of a description that leaves the process — hosts write
+it into line-based records and path-like locations, where those characters are
+not representable. An id of `"cursor\nclaude"` read back as two lines is how a
+host silently marks a *different* tool's one-shot work complete; a trailing
+space is written verbatim and read back trimmed, so it never matches itself.
+The registry refuses both rather than letting every host rediscover the rule.
 
 `Sendable` is the only conformance `AITool` refines. `Codable`, `Hashable` and
 `Equatable` are deliberately absent: nothing here serializes to a wire format,
