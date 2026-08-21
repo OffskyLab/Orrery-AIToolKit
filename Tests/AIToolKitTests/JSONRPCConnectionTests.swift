@@ -68,4 +68,44 @@ struct JSONRPCConnectionTests {
             try await conn.call("tool/describe", nil)
         }
     }
+
+    @Test("a reply with the wrong id is reported as a mismatch, not paired")
+    func wrongIdIsMismatch() async throws {
+        let t = InMemoryTransport { _ in
+            // A fresh connection's first call allocates id 1; answer with a
+            // different id so the reply cannot be honestly paired with it.
+            let res = JSONRPCResponse(id: 999, result: .string("ok"), error: nil)
+            return try? JSONEncoder().encode(res)
+        }
+        let conn = JSONRPCConnection(transport: t, timeout: .milliseconds(200))
+        await #expect(throws: JSONRPCError.idMismatch(expected: 1, got: 999)) {
+            try await conn.call("tool/describe", nil)
+        }
+    }
+
+    @Test("a null id with an error body is the plugin unable to parse our request")
+    func nullIdWithErrorIsRemote() async throws {
+        let t = InMemoryTransport { _ in
+            let res = JSONRPCResponse(
+                id: nil, result: nil,
+                error: .init(code: -32700, message: "Parse error"))
+            return try? JSONEncoder().encode(res)
+        }
+        let conn = JSONRPCConnection(transport: t, timeout: .milliseconds(200))
+        await #expect(throws: JSONRPCError.remote(.init(code: -32700, message: "Parse error"))) {
+            try await conn.call("tool/describe", nil)
+        }
+    }
+
+    @Test("a null id with a result is still a mismatch")
+    func nullIdWithResultIsMismatch() async throws {
+        let t = InMemoryTransport { _ in
+            let res = JSONRPCResponse(id: nil, result: .string("ok"), error: nil)
+            return try? JSONEncoder().encode(res)
+        }
+        let conn = JSONRPCConnection(transport: t, timeout: .milliseconds(200))
+        await #expect(throws: JSONRPCError.idMismatch(expected: 1, got: nil)) {
+            try await conn.call("tool/describe", nil)
+        }
+    }
 }

@@ -93,6 +93,10 @@ public enum JSONRPCError: Error, Equatable, Sendable {
     case connectionClosed
     /// A reply arrived that was not a JSON-RPC response.
     case malformedResponse
+    /// The peer answered with an id that was not the one asked. A plugin
+    /// replying out of turn is a plugin bug, and accepting it silently would
+    /// pair a reply with the wrong request.
+    case idMismatch(expected: Int, got: Int?)
 
     public static let methodNotFoundCode = -32601
 }

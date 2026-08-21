@@ -41,6 +41,18 @@ public actor JSONRPCConnection {
         guard let response = try? JSONDecoder().decode(JSONRPCResponse.self, from: reply)
         else { throw JSONRPCError.malformedResponse }
 
+        // A null id paired with an error is JSON-RPC 2.0's way of saying the
+        // peer could not determine which request this was for (e.g. it could
+        // not parse our request) — real information, not a mismatch. Any
+        // other id mismatch, including a null id on a result, means we
+        // cannot trust this reply is paired with our request at all, so it
+        // is checked before looking at error/result.
+        if !(response.id == nil && response.error != nil) {
+            guard response.id == id else {
+                throw JSONRPCError.idMismatch(expected: id, got: response.id)
+            }
+        }
+
         if let error = response.error {
             if error.code == JSONRPCError.methodNotFoundCode {
                 throw JSONRPCError.methodNotFound(method)
