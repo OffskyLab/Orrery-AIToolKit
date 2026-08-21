@@ -11,6 +11,55 @@ orrery itself.
 **Status: 0.x.** The interface is expected to change while orrery's own
 migration onto it is in progress. Semver applies from 1.0.
 
+## Why a separate package
+
+The dependency that matters here is the one that is missing. A plugin points at
+this package and stops; it never links the host, so adding a tool never means
+patching the host or waiting for the host to release.
+
+```mermaid
+graph TB
+    Plugin["Tool plugin<br/>CursorTool, AiderTool, …"]
+    Host["Host application<br/>orrery"]
+    Kit["<b>AIToolKit</b><br/>AITool · AIToolRegistry<br/>zero dependencies"]
+
+    Plugin -->|"conforms to AITool,<br/>registers itself"| Kit
+    Host -->|"reads the registry,<br/>never names a tool"| Kit
+```
+
+The gap along the top is the design. Both sides depend on the package and
+neither depends on the other, so the host gains a tool it was never compiled
+against, and the plugin ships without a copy of the host's release schedule.
+
+## Registration and lookup
+
+Nothing resolves a tool by name. The host populates the registry once at
+startup, plugins add themselves, and every later call site asks the registry —
+which is why a tool the host has never heard of behaves like one it ships.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Host as Host
+    participant Reg as AIToolRegistry
+    participant Plug as Tool plugin
+
+    Note over Host,Plug: startup — before anything iterates tools
+    Host->>Reg: try register: built-in descriptions
+    Plug->>Reg: try register: CursorTool
+    Reg--)Plug: throws RegistrationError.invalidID<br/>if the id is unusable
+
+    Note over Host,Reg: afterwards — at every call site
+    Host->>Reg: all
+    Reg--)Host: [any AITool], sorted by id
+    Host->>Reg: tool id: "cursor"
+    Reg--)Host: any AITool, or nil
+```
+
+Ordering is the one rule: register before anything reads the registry. A host
+that iterates tools to do one-shot work will record what it covered, so a tool
+registered afterwards is a tool that work silently skipped.
+
 ## Conforming a tool
 
 `AITool` is a protocol. A conformer answers `id` and `displayName`; everything
@@ -31,7 +80,17 @@ contains a path separator or a control character, or begins with `.`. Each
 rejection names the rule it broke, as a `RegistrationError.Reason`.
 
 The id is the one part of a description that leaves the process, and it leaves
-in two shapes. It is **written into line-based records**: an id of
+in two shapes — which is why the rules are the package's job rather than each
+host's:
+
+```mermaid
+graph LR
+    ID["id"]
+    ID -->|"written one per line"| Rec["Line-based host records<br/>a newline in an id forges<br/>another tool's entry"]
+    ID -->|"configDirectoryName<br/>defaults to dot + id"| Path["Filesystem path<br/>a '..' segment escapes the<br/>directory it was joined onto"]
+```
+
+It is **written into line-based records**: an id of
 `"cursor\nclaude"` read back as two lines is how a host silently marks a
 *different* tool's one-shot work complete, and a trailing space is written
 verbatim and read back trimmed, so it never matches itself. And it is
