@@ -1,5 +1,10 @@
 import Foundation
-import Synchronization
+
+/// Errors raised by a Transport.
+public enum TransportError: Error, Equatable, Sendable {
+    /// The queue is empty and the transport is still open.
+    case noPendingReply
+}
 
 /// One line in, one line out. Everything above this is transport-agnostic,
 /// which is what lets a spawned child today become a socket tomorrow without
@@ -7,7 +12,7 @@ import Synchronization
 /// without spawning anything.
 public protocol Transport: Sendable {
     func send(_ line: Data) async throws
-    /// The next line, or nil once the peer is gone.
+    /// The next line from the peer, or nil once the peer has closed the stream.
     func receiveLine() async throws -> Data?
 }
 
@@ -15,11 +20,12 @@ public protocol Transport: Sendable {
 ///
 /// A handler may take as long as it likes, which is how timeout behaviour is
 /// tested without waiting on a real hung process.
-public final class InMemoryTransport: Transport {
+public actor InMemoryTransport: Transport {
     public typealias Handler = @Sendable (Data) async -> Data?
 
     private let handler: Handler
-    private let pending = Mutex<[Data?]>([])
+    private var pending: [Data] = []
+    private var isClosed = false
 
     public init(handler: @escaping Handler) {
         self.handler = handler
@@ -27,10 +33,20 @@ public final class InMemoryTransport: Transport {
 
     public func send(_ line: Data) async throws {
         let reply = await handler(line)
-        pending.withLock { $0.append(reply) }
+        if let reply = reply {
+            pending.append(reply)
+        } else {
+            isClosed = true
+        }
     }
 
     public func receiveLine() async throws -> Data? {
-        pending.withLock { $0.isEmpty ? nil : $0.removeFirst() }
+        if isClosed {
+            return nil
+        }
+        if pending.isEmpty {
+            throw TransportError.noPendingReply
+        }
+        return pending.removeFirst()
     }
 }

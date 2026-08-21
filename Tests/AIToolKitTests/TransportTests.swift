@@ -22,5 +22,19 @@ struct TransportTests {
         try await t.send(Data("hello".utf8))
         let got = try await t.receiveLine()
         #expect(got == nil)
+        // Verify the transport remains closed: a second call also returns nil
+        let got2 = try await t.receiveLine()
+        #expect(got2 == nil)
+    }
+
+    @Test("receiveLine before any send throws noPendingReply")
+    func noPendingReplyOnEmptyQueue() async throws {
+        let t = InMemoryTransport { _ in Data("reply".utf8) }
+        do {
+            _ = try await t.receiveLine()
+            #expect(Bool(false), "expected noPendingReply")
+        } catch TransportError.noPendingReply {
+            // Expected
+        }
     }
 }
