@@ -1,4 +1,4 @@
-import Foundation
+import Synchronization
 
 /// Which tools exist, according to what has been registered.
 ///
@@ -12,27 +12,33 @@ import Foundation
 /// It is also the id→tool table a host needs to read a serialized `"tool":
 /// "claude"` back into something usable: ``AITool`` is a protocol and cannot
 /// decode itself, so ``tool(id:)`` is the recovery step.
-public final class AIToolRegistry: @unchecked Sendable {
+///
+/// ## Thread safety
+///
+/// A `static let shared` that hosts mutate from anywhere has to be genuinely
+/// concurrency-safe, and this one is `Sendable` by the compiler's reckoning
+/// rather than by assertion: the only stored property is a `Mutex`, so the
+/// checker can see for itself that nothing here is reachable unsynchronized.
+/// An `@unchecked Sendable` over a lock would look identical from outside and
+/// mean something much weaker — a promise that every future edit remembers to
+/// take the lock. There is nothing to remember here, because the dictionary is
+/// unreachable except through `withLock`.
+public final class AIToolRegistry: Sendable {
 
     /// The registry a host application registers into at startup.
     public static let shared = AIToolRegistry()
 
-    private let lock = NSLock()
-    private var storage: [String: any AITool] = [:]
+    private let storage = Mutex<[String: any AITool]>([:])
 
     public init() {}
 
     /// Registers `tool`, replacing any existing description with the same id.
     public func register(_ tool: any AITool) {
-        lock.lock()
-        defer { lock.unlock() }
-        storage[tool.id] = tool
+        storage.withLock { $0[tool.id] = tool }
     }
 
     public func tool(id: String) -> (any AITool)? {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage[id]
+        storage.withLock { $0[id] }
     }
 
     /// Every registered tool, sorted by id.
@@ -41,21 +47,15 @@ public final class AIToolRegistry: @unchecked Sendable {
     /// however registration happened to be sequenced — several hosts iterate
     /// this to build user-facing output.
     public var all: [any AITool] {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.values.sorted { $0.id < $1.id }
+        storage.withLock { $0.values.sorted { $0.id < $1.id } }
     }
 
     public var isEmpty: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return storage.isEmpty
+        storage.withLock { $0.isEmpty }
     }
 
     /// Empties the registry. Intended for tests.
     public func reset() {
-        lock.lock()
-        defer { lock.unlock() }
-        storage.removeAll()
+        storage.withLock { $0.removeAll() }
     }
 }

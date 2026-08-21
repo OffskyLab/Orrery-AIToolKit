@@ -26,10 +26,19 @@ struct CodexTool: AITool {
 AIToolRegistry.shared.register(CodexTool())
 ```
 
-`AITool` is deliberately neither `Codable` nor `Hashable`. Decoding needs a
-concrete type, and recovering one from a serialized id needs an id→type
-table — which is what `AIToolRegistry` is. So a host encodes the `id` and reads
-it back with `registry.tool(id:)`.
+`Sendable` is the only conformance `AITool` refines. `Codable`, `Hashable` and
+`Equatable` are deliberately absent: nothing here serializes to a wire format,
+and decoding would need a concrete type anyway — recovering one from a stored
+id needs an id→type table, which is what `AIToolRegistry` is. A host encodes
+the `id` and reads it back with `registry.tool(id:)`.
+
+## Concurrency
+
+Strict Swift 6, no escape hatches: no `@unchecked Sendable`,
+`nonisolated(unsafe)` or `@preconcurrency` anywhere. `AIToolRegistry` is plain
+`Sendable`, holding its table in a `Mutex` so the compiler verifies the claim
+instead of taking the package's word for it. The manifest states
+`swiftLanguageModes: [.v6]` rather than inheriting it.
 
 ## What belongs here
 

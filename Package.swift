@@ -14,5 +14,9 @@ let package = Package(
             dependencies: ["AIToolKit"],
             path: "Tests/AIToolKitTests"
         ),
-    ]
+    ],
+    // Stated rather than inherited. Tools-version 6.0 already defaults to this,
+    // but a package whose registry relies on the compiler verifying its
+    // Sendability should say so where a consumer reads the manifest.
+    swiftLanguageModes: [.v6]
 )

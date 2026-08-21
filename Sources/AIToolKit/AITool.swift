@@ -1,5 +1,3 @@
-import Foundation
-
 /// One AI CLI tool's description of itself.
 ///
 /// Everything here is a *fact about the tool*: where it keeps its config, how
@@ -13,18 +11,21 @@ import Foundation
 /// *compute* an answer — or that later needs behaviour rather than data — can,
 /// which a fixed set of stored properties would have foreclosed.
 ///
-/// Identity is `id`. This protocol deliberately does not refine `Hashable` or
-/// `Codable`; see the note on serialization below.
+/// Identity is `id`. `Sendable` is the only conformance this protocol refines,
+/// and the only one that has to hold: a registered tool is shared across
+/// concurrency domains, so that one is load-bearing. `Codable`, `Hashable` and
+/// `Equatable` are deliberately absent — nothing in this package serializes to
+/// a wire format or uses a tool as a dictionary key.
 ///
 /// ## Serialization is the host's job
 ///
-/// `any AITool` cannot be `Decodable`. Decoding produces a *concrete* type, and
-/// nothing in a serialized value says which one — recovering it needs an
-/// id→type table, which is exactly what ``AIToolRegistry`` already is. So a
-/// host writes `"tool": "claude"` by encoding the `id`, and reads it back by
-/// looking the id up in its registry. Baking a placeholder-producing decoder in
-/// here would only hand callers a value with an id and nothing else, dressed up
-/// as a real tool description.
+/// `any AITool` could not be `Decodable` in any case. Decoding produces a
+/// *concrete* type, and nothing in a serialized value says which one —
+/// recovering it needs an id→type table, which is exactly what
+/// ``AIToolRegistry`` already is. So a host that wants `"tool": "claude"` on
+/// disk encodes the `id` and reads it back by looking that id up in its
+/// registry. A placeholder-producing decoder in here would only hand callers a
+/// value with an id and nothing else, dressed up as a real tool description.
 public protocol AITool: Sendable {
 
     /// Stable identifier. Also the on-disk value and, typically, the directory
