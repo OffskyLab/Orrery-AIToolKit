@@ -37,4 +37,32 @@ struct TransportTests {
             // Expected
         }
     }
+
+    @Test("concurrent sends maintain request order despite handler speeds")
+    func concurrentSendsPreserveOrder() async throws {
+        let t = InMemoryTransport { line in
+            let text = String(decoding: line, as: UTF8.self)
+            // First request: slow handler
+            if text == "slow" {
+                do {
+                    try await Task.sleep(nanoseconds: 10_000_000)  // 10ms
+                } catch { }
+                return Data("slow-reply".utf8)
+            }
+            // Second request: fast handler
+            return Data("fast-reply".utf8)
+        }
+
+        // Issue both sends concurrently
+        async let send1 = t.send(Data("slow".utf8))
+        async let send2 = t.send(Data("fast".utf8))
+        _ = try await (send1, send2)
+
+        // Verify we get replies in request order, not completion order
+        let reply1 = try await t.receiveLine()
+        #expect(String(decoding: reply1! as Data, as: UTF8.self) == "slow-reply")
+
+        let reply2 = try await t.receiveLine()
+        #expect(String(decoding: reply2! as Data, as: UTF8.self) == "fast-reply")
+    }
 }
