@@ -125,3 +125,87 @@ gemini-cli ignores `GEMINI_CONFIG_DIR` and reads only `$HOME/.gemini`.
 Anything the *host* decides. Account pools, credential storage policy,
 directory sharing — those live in the host, because they are its inventions,
 not the tool's.
+
+## Direction: dispatch is a detail
+
+> **Not implemented.** Everything in this section is design, recorded here so
+> the shipped interface can be judged against where it is going. Nothing below
+> exists in `0.0.1-dev.3`, which is in-process only.
+
+A framework is an architecture of method calls. Whether a call lands in this
+process or another one is a dispatch choice, not a change of design — and RPC
+is what lets a piece that would otherwise be compiled in ship and run on its
+own instead.
+
+That makes the plugin boundary a *process* boundary rather than a link-time
+one, which is the difference between "a third party can add a tool" and "a
+third party can add a tool without forking the host."
+
+### The proxy is itself an `AITool`
+
+The registry does not change. A remote tool is a conformer that forwards each
+call over the wire, so a call site cannot tell — and does not need to.
+
+```mermaid
+graph TB
+    Call["Host call site<br/>holds only 'any AITool'"]
+    Reg["AIToolRegistry"]
+    Local["ClaudeTool<br/>local struct"]
+    Remote["RemoteAITool<br/>forwarding proxy"]
+    Side["orrery-claude<br/>separate process"]
+
+    Call --> Reg
+    Reg --> Local
+    Reg --> Remote
+    Remote -.->|"JSON-RPC 2.0"| Side
+```
+
+Two consequences fall out. Built-in and third-party tools take the *same*
+path, so shipping a built-in this way is what proves the third-party path
+works. And the transport becomes a per-tool, reversible decision: a tool whose
+call rate makes a round trip too expensive can be linked in-process instead,
+without touching a single call site.
+
+### The wire is JSON-RPC 2.0, so the transport can move
+
+Method calls carry request ids and travel over a stream. Nothing in the
+protocol assumes one process per request, so a spawned child today and a
+persistent socket tomorrow are the same protocol over different plumbing.
+
+```mermaid
+graph TB
+    A["AITool — the interface"]
+    B["JSON-RPC 2.0 — a method call on a wire<br/>request ids · capabilities · error codes"]
+    C["stdio pipes<br/>one spawned child"]
+    D["AF_UNIX socket<br/>persistent, many clients"]
+
+    A --> B
+    B --> C
+    B --> D
+```
+
+`initialize` negotiates protocol version and declares which optional methods a
+plugin implements, so the host never pays a round trip for a capability that
+is not there. `-32601 Method not found` is the standard answer for one that
+slipped through.
+
+A socket earns its place when the peer outlives the caller or serves several
+callers at once — a status line refreshing every thirty seconds in every open
+editor window is the case that would justify it, not an occasional interactive
+command. Two details bite on macOS: `sun_path` caps a socket path near 104
+bytes, which deep config directories exceed easily, and the socket's file
+permissions *are* its access control.
+
+### The price, and why it was already paid
+
+A remotable interface cannot take closures, shared mutable references, or live
+handles; every argument and result has to survive serialization.
+
+That is the same constraint as "no host types in the interface", arrived at
+from the other side — a host's account store is unremotable precisely because
+it is a live object wired to a filesystem. Two independent rules converging on
+one line is usually a sign the line is in the right place.
+
+It is also why `AITool` refines `Sendable` alone. A protocol carrying
+`Codable` could not be conformed to by a forwarding proxy without contortion;
+serialization belongs to a concrete wire type, not to the interface.
