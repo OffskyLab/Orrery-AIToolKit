@@ -7,8 +7,10 @@ import Foundation
 /// smallest thing that is both.
 public enum RPCValue: Codable, Sendable, Equatable {
     case string(String)
-    case int(Int)
-    case double(Double)
+    /// A JSON number. There is one number case because JSON has one number type,
+    /// and a `.double`/`.int` split cannot round-trip: an integral double like `7.0`
+    /// encodes to `7` (Foundation drops the fraction) and decodes back as `.int(7)`.
+    case number(Double)
     case bool(Bool)
     case array([RPCValue])
     case object([String: RPCValue])
@@ -18,8 +20,7 @@ public enum RPCValue: Codable, Sendable, Equatable {
         let c = try decoder.singleValueContainer()
         if c.decodeNil() { self = .null; return }
         if let v = try? c.decode(Bool.self) { self = .bool(v); return }
-        if let v = try? c.decode(Int.self) { self = .int(v); return }
-        if let v = try? c.decode(Double.self) { self = .double(v); return }
+        if let v = try? c.decode(Double.self) { self = .number(v); return }
         if let v = try? c.decode(String.self) { self = .string(v); return }
         if let v = try? c.decode([RPCValue].self) { self = .array(v); return }
         if let v = try? c.decode([String: RPCValue].self) { self = .object(v); return }
@@ -31,8 +32,7 @@ public enum RPCValue: Codable, Sendable, Equatable {
         var c = encoder.singleValueContainer()
         switch self {
         case .string(let v): try c.encode(v)
-        case .int(let v):    try c.encode(v)
-        case .double(let v): try c.encode(v)
+        case .number(let v): try c.encode(v)
         case .bool(let v):   try c.encode(v)
         case .array(let v):  try c.encode(v)
         case .object(let v): try c.encode(v)
@@ -69,11 +69,11 @@ public struct JSONRPCErrorBody: Codable, Sendable, Equatable {
 
 public struct JSONRPCResponse: Codable, Sendable {
     public let jsonrpc: String
-    public let id: Int
+    public let id: Int?
     public let result: RPCValue?
     public let error: JSONRPCErrorBody?
 
-    public init(id: Int, result: RPCValue?, error: JSONRPCErrorBody?) {
+    public init(id: Int?, result: RPCValue?, error: JSONRPCErrorBody?) {
         self.jsonrpc = "2.0"
         self.id = id
         self.result = result
