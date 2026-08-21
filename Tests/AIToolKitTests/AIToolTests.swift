@@ -41,6 +41,24 @@ struct AIToolTests {
         #expect(String(data: data, encoding: .utf8) == "\"claude\"")
     }
 
+    /// A bare id string can't carry displayName, configDirEnvVar, or anything
+    /// else — decoding rebuilds a placeholder instead. Pinning its exact shape
+    /// here because this contract is about to be frozen by a tagged release.
+    @Test("decodes from a bare id string as a placeholder")
+    func decodesFromBareIDAsPlaceholder() throws {
+        let data = Data("\"claude\"".utf8)
+        let decoded = try JSONDecoder().decode(AITool.self, from: data)
+
+        #expect(decoded.id == "claude")
+        #expect(decoded.displayName == "claude")
+        #expect(decoded.configDirectoryName == ".claude")
+        #expect(decoded.configDirEnvVar == nil)
+
+        let data2 = try JSONEncoder().encode(claude)
+        let roundTripped = try JSONDecoder().decode(AITool.self, from: data2)
+        #expect(roundTripped == claude)
+    }
+
     @Test("supportsSetup follows whether there is an install command")
     func supportsSetup() {
         #expect(claude.supportsSetup)
