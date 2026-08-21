@@ -60,6 +60,77 @@ Ordering is the one rule: register before anything reads the registry. A host
 that iterates tools to do one-shot work will record what it covered, so a tool
 registered afterwards is a tool that work silently skipped.
 
+## Type structure
+
+```mermaid
+classDiagram
+    direction LR
+
+    class AITool {
+        <<protocol>>
+        +id : String
+        +displayName : String
+        +configDirectoryName : String
+        +configDirEnvVar : String?
+        +authLoginCommand : [String]?
+        +installCommand : [String]?
+        +sessionSubdirectories : [String]
+        +ansiColor : String
+    }
+
+    class AIToolDefaults {
+        <<extension>>
+        +configDirectoryName : String
+        +configDirEnvVar : String?
+        +authLoginCommand : [String]?
+        +installCommand : [String]?
+        +sessionSubdirectories : [String]
+        +ansiColor : String
+        +supportsSetup : Bool
+        +coloredTag : String
+    }
+
+    class AIToolRegistry {
+        <<final class>>
+        -storage : Mutex
+        +shared : AIToolRegistry
+        +register(tool) throws
+        +tool(id) any AITool?
+        +all : [any AITool]
+        +isEmpty : Bool
+        +reset()
+    }
+
+    class RegistrationError {
+        <<enum>>
+        +invalidID(id, Reason)
+    }
+
+    class Reason {
+        <<enum>>
+        +empty
+        +containsWhitespaceOrNewline
+        +containsPathSeparator
+        +beginsWithDot
+        +containsControlCharacter
+    }
+
+    class Sendable {
+        <<protocol>>
+    }
+
+    AITool --|> Sendable : refines
+    AIToolDefaults ..|> AITool : supplies defaults for
+    AIToolRegistry o-- AITool : holds many
+    AIToolRegistry ..> RegistrationError : throws
+    RegistrationError *-- Reason
+```
+
+Only `id` and `displayName` have no default, so those two are what a conformer
+must answer. `supportsSetup` and `coloredTag` are derived and are not
+requirements at all — a detail with teeth, since extension members do not
+dispatch dynamically.
+
 ## Conforming a tool
 
 `AITool` is a protocol. A conformer answers `id` and `displayName`; everything
@@ -147,17 +218,48 @@ The registry does not change. A remote tool is a conformer that forwards each
 call over the wire, so a call site cannot tell — and does not need to.
 
 ```mermaid
-graph TB
-    Call["Host call site<br/>holds only 'any AITool'"]
-    Reg["AIToolRegistry"]
-    Local["ClaudeTool<br/>local struct"]
-    Remote["RemoteAITool<br/>forwarding proxy"]
-    Side["orrery-claude<br/>separate process"]
+classDiagram
+    direction TB
 
-    Call --> Reg
-    Reg --> Local
-    Reg --> Remote
-    Remote -.->|"JSON-RPC 2.0"| Side
+    class AITool {
+        <<protocol>>
+        +id : String
+        +accountInfo(configDir) AccountInfo
+    }
+
+    class LocalTool {
+        <<struct>>
+        +id : String
+        +accountInfo(configDir) AccountInfo
+    }
+
+    class RemoteAITool {
+        <<struct>>
+        -connection : JSONRPCConnection
+        -cached : Description
+        +id : String
+        +accountInfo(configDir) AccountInfo
+    }
+
+    class JSONRPCConnection {
+        <<class>>
+        -transport : Transport
+        +call(method, params) Result
+    }
+
+    class PluginProcess {
+        <<process>>
+        +initialize()
+        +tool_describe()
+        +tool_accountInfo()
+    }
+
+    LocalTool ..|> AITool
+    RemoteAITool ..|> AITool
+    RemoteAITool o-- JSONRPCConnection
+    JSONRPCConnection ..> PluginProcess : JSON-RPC 2.0
+
+    note for RemoteAITool "Same protocol as the local struct — a call site holding 'any AITool' cannot tell which one it has."
 ```
 
 Two consequences fall out. Built-in and third-party tools take the *same*
@@ -188,6 +290,64 @@ graph TB
 plugin implements, so the host never pays a round trip for a capability that
 is not there. `-32601 Method not found` is the standard answer for one that
 slipped through.
+
+### A plugin's lifecycle, and where it can end up
+
+```mermaid
+stateDiagram-v2
+    [*] --> Discovered
+
+    Discovered --> Initializing : spawn
+    Discovered --> Absent : no binary
+
+    Initializing --> Ready : initialize ok
+    Initializing --> Rejected : protocol major unknown
+    Initializing --> Absent : timeout or spawn failed
+
+    Ready --> Ready : call returns
+    Ready --> Unreachable : timeout or crash
+
+    Unreachable --> Initializing : next use respawns
+
+    Absent --> [*]
+    Rejected --> [*]
+
+    note left of Absent : never registered, so never recorded as covered by one-shot host work
+    note right of Unreachable : reads degrade, writes abort
+```
+
+`Absent` and `Rejected` are terminal for the run and leave every other tool
+untouched — one broken plugin must not cost the host its working ones.
+
+The note on the left is the interaction worth stating out loud: a host that
+does one-shot per-tool work records what it covered, so a tool absent at that
+moment must not be marked done. Recording coverage as a union of tools that
+were actually present gets this right for free, and the tool is picked up on a
+later run once its plugin is fixed.
+
+### Reads degrade, writes abort
+
+The rule that decides every failure: a missing answer may be rendered as
+missing, but an action that may not have happened is never reported as done.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant H as Host
+    participant P as Plugin
+
+    H->>P: tool/accountInfo
+    P--)H: timeout
+    Note over H: read — degrade<br/>list the account, leave email blank
+
+    H->>P: tool/credentialCopy
+    P--)H: timeout
+    Note over H: write — abort<br/>never mark the account seeded
+```
+
+Listing accounts is worth doing with one field missing. Recording a credential
+as copied when it may not have been is the failure that looks like success,
+and costs someone an account they believe is safe.
 
 A socket earns its place when the peer outlives the caller or serves several
 callers at once. Which caller that is should be established by measuring a
