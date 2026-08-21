@@ -209,3 +209,49 @@ one line is usually a sign the line is in the right place.
 It is also why `AITool` refines `Sendable` alone. A protocol carrying
 `Codable` could not be conformed to by a forwarding proxy without contortion;
 serialization belongs to a concrete wire type, not to the interface.
+
+### A tool knows how to take its own config directory apart
+
+A CLI tool installs one config directory and mixes two different things into
+it: who you are, and what you have accumulated. A host that wants one identity
+to move between several sets of accumulated state — or several identities to
+share one set — has to separate them, and the classification is knowledge
+about *that tool*, not about the host.
+
+```mermaid
+graph LR
+    Real["The directory the tool<br/>installs and reads"]
+    Rule{{"classification<br/>declared by the tool"}}
+    ID["identity store<br/>credentials · account keys"]
+    Shared["shared store<br/>projects · memory · commands"]
+    Back["reassembled for the tool<br/>at launch"]
+
+    Real --> Rule
+    Rule --> ID
+    Rule --> Shared
+    ID --> Back
+    Shared --> Back
+```
+
+The classification has three layers, and the third is the one that bites:
+
+- **Whole subdirectories.** Some are per-identity and disposable; some are the
+  accumulated state worth sharing.
+- **Keys inside a mixed file.** At least one file usually carries identity and
+  shared state in the same JSON object, so the split is per-key, not per-file.
+- **Unknown keys.** A tool gains fields over time, and a field nobody has
+  classified yet must default to *identity* — sharing an unrecognized
+  identity-like value across accounts is the failure that is hard to notice
+  and hard to undo.
+
+The declaration is data, not an operation. The tool says which paths and keys
+belong where; the host decides how to honour it — symlink or copy, atomicity,
+what to do on a partial failure — because those are the host's problem and its
+existing machinery already solves them.
+
+Two things fall out. When a tool adds a field, the plugin is what needs
+updating, not the host, which is the concrete payoff a plugin boundary is
+supposed to buy. And "several installations of one tool" stops being a feature
+to build: bind a tool to different roots and pair each with an identity, and
+that is what you get — without this package ever learning the host's word for
+what those roots are.
