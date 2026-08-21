@@ -9,9 +9,14 @@ let package = Package(
     ],
     targets: [
         .target(name: "AIToolKit", path: "Sources/AIToolKit"),
+        .executableTarget(
+            name: "AIToolKitTestPlugin",
+            dependencies: ["AIToolKit"],
+            path: "Sources/AIToolKitTestPlugin"
+        ),
         .testTarget(
             name: "AIToolKitTests",
-            dependencies: ["AIToolKit"],
+            dependencies: ["AIToolKit", "AIToolKitTestPlugin"],
             path: "Tests/AIToolKitTests"
         ),
     ],
