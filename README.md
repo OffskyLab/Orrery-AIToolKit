@@ -190,11 +190,11 @@ is not there. `-32601 Method not found` is the standard answer for one that
 slipped through.
 
 A socket earns its place when the peer outlives the caller or serves several
-callers at once — a status line refreshing every thirty seconds in every open
-editor window is the case that would justify it, not an occasional interactive
-command. Two details bite on macOS: `sun_path` caps a socket path near 104
-bytes, which deep config directories exceed easily, and the socket's file
-permissions *are* its access control.
+callers at once. Which caller that is should be established by measuring a
+real workload, not by reasoning about which one sounds frequent — the obvious
+candidate is often not a client at all. Two details bite on macOS: `sun_path`
+caps a socket path near 104 bytes, which deep config directories exceed
+easily, and the socket's file permissions *are* its access control.
 
 ### The price, and why it was already paid
 
