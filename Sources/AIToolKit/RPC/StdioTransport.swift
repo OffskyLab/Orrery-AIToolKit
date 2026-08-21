@@ -23,6 +23,15 @@ public actor StdioTransport: Transport {
     private let inPipe = Pipe()
     private let outPipe = Pipe()
     private var started = false
+    /// Bytes read but not yet resolved into a complete line. An actor
+    /// property, not a local in ``receiveLine()``, because a partial line can
+    /// straddle two *calls*, not just two chunks within one call: the
+    /// protocol is built to allow pipelining, and a plugin whose reply is
+    /// followed by a trailing partial line would otherwise have that
+    /// fragment discarded when the local buffer was thrown away at the end
+    /// of the call that found the complete line — a loss that presents to
+    /// the caller as a timeout rather than as the data-loss bug it is.
+    private var pending = Data()
 
     public init(executable: URL, arguments: [String], environment: [String: String]) {
         process.executableURL = executable
@@ -43,26 +52,36 @@ public actor StdioTransport: Transport {
 
     public func send(_ line: Data) async throws {
         try startIfNeeded()
-        inPipe.fileHandleForWriting.write(line)
-        inPipe.fileHandleForWriting.write(Data("\n".utf8))
+        // The throwing variant, not `write(_:)`: on a closed pipe (a plugin
+        // that has already died) `write(_:)` raises an Objective-C
+        // exception, which Swift cannot catch — it would take the host down
+        // over one dead plugin. `write(contentsOf:)` reports the same
+        // condition as a thrown Swift error instead, which `send`'s callers
+        // already handle.
+        try inPipe.fileHandleForWriting.write(contentsOf: line)
+        try inPipe.fileHandleForWriting.write(contentsOf: Data("\n".utf8))
     }
 
     public func receiveLine() async throws -> Data? {
         let fd = outPipe.fileHandleForReading.fileDescriptor
-        var buffer = Data()
         while true {
-            let chunk = try await Self.blockingRead(fd: fd)
-            if chunk.isEmpty { return buffer.isEmpty ? nil : buffer }
-            buffer.append(chunk)
-            while let nl = buffer.firstIndex(of: UInt8(ascii: "\n")) {
-                let line = buffer[buffer.startIndex..<nl]
-                buffer.removeSubrange(buffer.startIndex...nl)
+            while let nl = pending.firstIndex(of: UInt8(ascii: "\n")) {
+                let line = pending[pending.startIndex..<nl]
+                pending.removeSubrange(pending.startIndex...nl)
                 // Skip anything that is not a JSON-RPC response: a plugin's
                 // stray stdout write must not desynchronise the stream.
                 if (try? JSONDecoder().decode(JSONRPCResponse.self, from: Data(line))) != nil {
                     return Data(line)
                 }
             }
+            let chunk = try await Self.blockingRead(fd: fd)
+            if chunk.isEmpty {
+                if pending.isEmpty { return nil }
+                let leftover = pending
+                pending.removeAll()
+                return leftover
+            }
+            pending.append(chunk)
         }
     }
 

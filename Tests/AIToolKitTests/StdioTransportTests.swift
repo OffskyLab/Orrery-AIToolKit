@@ -78,4 +78,27 @@ struct StdioTransportTests {
         }
         await killer.value
     }
+
+    @Test("a plugin that dies mid-conversation causes a throw, not a host crash")
+    func crashedPluginThrowsRatherThanCrashingHost() async throws {
+        let transport = makeTransport(behaviour: "crash-after-initialize")
+        let conn = JSONRPCConnection(transport: transport, timeout: .seconds(5))
+
+        // First call: the plugin answers normally, per the fixture's
+        // crash-after-initialize behaviour.
+        _ = try await conn.call("tool/describe", nil)
+
+        // Second call: the plugin reads this request and exits without
+        // answering. Which side notices the dead plugin first — `send`'s
+        // write, if the pipe has already broken, or `receiveLine`'s read,
+        // finding EOF — is not pinned here; asserting a specific error would
+        // make this brittle. What matters is that the host surfaces this as
+        // a thrown Swift error rather than the uncatchable Objective-C
+        // exception the non-throwing `FileHandle.write(_:)` would raise on
+        // a closed pipe, which nothing in Swift can catch and would take
+        // the whole host down over one dead plugin.
+        await #expect(throws: (any Error).self) {
+            try await conn.call("tool/describe", nil)
+        }
+    }
 }
