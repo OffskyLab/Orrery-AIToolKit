@@ -26,13 +26,21 @@ struct CodexTool: AITool {
 try AIToolRegistry.shared.register(CodexTool())
 ```
 
-`register` throws when the id is empty or carries whitespace or a newline.
-The id is the one part of a description that leaves the process — hosts write
-it into line-based records and path-like locations, where those characters are
-not representable. An id of `"cursor\nclaude"` read back as two lines is how a
-host silently marks a *different* tool's one-shot work complete; a trailing
-space is written verbatim and read back trimmed, so it never matches itself.
-The registry refuses both rather than letting every host rediscover the rule.
+`register` throws when the id is empty, carries whitespace or a newline,
+contains a path separator or a control character, or begins with `.`. Each
+rejection names the rule it broke, as a `RegistrationError.Reason`.
+
+The id is the one part of a description that leaves the process, and it leaves
+in two shapes. It is **written into line-based records**: an id of
+`"cursor\nclaude"` read back as two lines is how a host silently marks a
+*different* tool's one-shot work complete, and a trailing space is written
+verbatim and read back trimmed, so it never matches itself. And it is
+**path-forming**, because `configDirectoryName` defaults to `".\(id)"` — so
+`"a/b"` becomes a nested path where one segment was expected, `"./../evil"`
+becomes `"../../evil"` and escapes the home directory it was joined onto, and a
+NUL truncates the path at the first POSIX call. The package ships the default
+that makes ids path-forming, so the package validates them, rather than leaving
+every host to rediscover the rule.
 
 `Sendable` is the only conformance `AITool` refines. `Codable`, `Hashable` and
 `Equatable` are deliberately absent: nothing here serializes to a wire format,

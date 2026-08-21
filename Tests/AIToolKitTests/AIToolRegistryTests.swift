@@ -123,19 +123,87 @@ struct AIToolRegistryTests {
         }
     }
 
+    /// An id is path-forming: `configDirectoryName` defaults to `".\(id)"`, so
+    /// a separator turns the single directory segment a host expects into
+    /// several — and `"./../evil"` into `"../../evil"`, which walks out of
+    /// whatever home directory it was joined onto.
+    @Test(
+        "an id carrying a path separator is refused",
+        arguments: ["a/b", "./../evil", "/absolute", "trailing/", "a\\b"]
+    )
+    func pathSeparatorIDIsRefused(id: String) {
+        let registry = AIToolRegistry()
+
+        #expect(
+            throws: AIToolRegistry.RegistrationError.invalidID(
+                id, reason: .containsPathSeparator
+            )
+        ) {
+            try registry.register(tool(id))
+        }
+    }
+
+    /// The leading dot is the default's to add. An id that supplies its own
+    /// yields `"..hidden"`; `"."` and `".."` are traversal outright.
+    @Test("an id beginning with a dot is refused", arguments: [".", "..", ".hidden"])
+    func leadingDotIDIsRefused(id: String) {
+        let registry = AIToolRegistry()
+
+        #expect(
+            throws: AIToolRegistry.RegistrationError.invalidID(id, reason: .beginsWithDot)
+        ) {
+            try registry.register(tool(id))
+        }
+    }
+
+    /// Control characters are not whitespace and so passed the check above, but
+    /// POSIX truncates a path at NUL — the directory a host creates would not
+    /// be the one the id named.
+    @Test(
+        "an id carrying a control character is refused",
+        arguments: ["cur\u{0000}sor", "cur\u{0007}sor", "\u{001B}[31mcursor"]
+    )
+    func controlCharacterIDIsRefused(id: String) {
+        let registry = AIToolRegistry()
+
+        #expect(
+            throws: AIToolRegistry.RegistrationError.invalidID(
+                id, reason: .containsControlCharacter
+            )
+        ) {
+            try registry.register(tool(id))
+        }
+    }
+
+    /// The rules above must not have made ordinary ids collateral damage.
+    @Test(
+        "an ordinary id still registers",
+        arguments: ["cursor", "claude", "codex", "gemini", "aider-2", "my_tool"]
+    )
+    func ordinaryIDStillRegisters(id: String) throws {
+        let registry = AIToolRegistry()
+        try registry.register(tool(id))
+
+        #expect(registry.tool(id: id)?.id == id)
+        #expect(registry.tool(id: id)?.configDirectoryName == ".\(id)")
+    }
+
     /// Rejection must not be half-done. Validation runs before the lock, so
     /// there is no window in which the bad id was stored and then removed.
-    @Test("a refused registration leaves the registry untouched")
-    func refusedRegistrationChangesNothing() {
+    @Test(
+        "a refused registration leaves the registry untouched",
+        arguments: ["cursor\nclaude", "", "a/b", "..", "cur\u{0000}sor"]
+    )
+    func refusedRegistrationChangesNothing(id: String) {
         let registry = AIToolRegistry()
 
         #expect(throws: AIToolRegistry.RegistrationError.self) {
-            try registry.register(tool("cursor\nclaude"))
+            try registry.register(tool(id))
         }
 
         #expect(registry.isEmpty)
         #expect(registry.all.isEmpty)
         #expect(registry.tool(id: "claude") == nil)
-        #expect(registry.tool(id: "cursor\nclaude") == nil)
+        #expect(registry.tool(id: id) == nil)
     }
 }

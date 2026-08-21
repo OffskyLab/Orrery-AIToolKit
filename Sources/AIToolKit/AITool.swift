@@ -31,22 +31,37 @@ public protocol AITool: Sendable {
     /// Stable identifier. Also the on-disk value and, typically, the directory
     /// segment a host uses for this tool.
     ///
-    /// Must be non-empty and free of whitespace and newlines;
+    /// Must be non-empty, free of whitespace and newlines, free of path
+    /// separators and control characters, and must not begin with `.`;
     /// ``AIToolRegistry/register(_:)`` rejects anything else rather than
     /// storing it.
     ///
     /// That restriction is not tidiness. An id is the *only* part of a tool
-    /// description that leaves the process: hosts write it into line-based
-    /// records and path-like locations, neither of which can represent these
-    /// characters. An id containing a newline is read back as two records —
-    /// orrery's per-tool migration flag stores one id per line, so an id of
-    /// `"cursor\nclaude"` silently marks claude's one-shot migration complete
-    /// on that machine, permanently. An id with a trailing space is written
-    /// verbatim and read back trimmed, so it never matches itself and the
-    /// migration it guards re-runs on every invocation, forever. Neither
-    /// failure is visible where it is caused, which is why the framework that
-    /// accepts ids it does not control refuses them at the boundary instead of
-    /// leaving every host to rediscover the rule.
+    /// description that leaves the process, and it leaves it in two shapes,
+    /// each of which rules out some characters.
+    ///
+    /// **It is written into line-based records.** An id containing a newline is
+    /// read back as two records — orrery's per-tool migration flag stores one
+    /// id per line, so an id of `"cursor\nclaude"` silently marks claude's
+    /// one-shot migration complete on that machine, permanently. An id with a
+    /// trailing space is written verbatim and read back trimmed, so it never
+    /// matches itself and the migration it guards re-runs on every invocation,
+    /// forever.
+    ///
+    /// **It is path-forming, and by this package's own doing.** The default
+    /// ``configDirectoryName`` below is `".\(id)"`, so whatever an id contains,
+    /// a host ends up joining onto a home directory. An id of `"a/b"` becomes a
+    /// nested path where the host expected one directory segment; `"./../evil"`
+    /// becomes `"../../evil"` and walks out of the home directory entirely;
+    /// `".hidden"` supplies a dot the default is about to add again. And a
+    /// control character — NUL above all — survives a `String` intact but
+    /// truncates the path the moment it reaches a POSIX API, so the directory
+    /// created is not the one the id named.
+    ///
+    /// None of these failures is visible where it is caused, which is why the
+    /// framework that both accepts ids it does not control *and* ships the
+    /// default that makes them path-forming refuses them at the boundary,
+    /// instead of leaving every host to rediscover the rule.
     var id: String { get }
 
     /// Human-facing name, e.g. "Claude Code".
