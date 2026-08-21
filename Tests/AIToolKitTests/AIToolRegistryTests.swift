@@ -5,12 +5,14 @@ import Testing
 @Suite("AIToolRegistry")
 struct AIToolRegistryTests {
 
-    private func tool(_ id: String) -> AITool {
-        AITool(
-            id: id, displayName: id, configDirectoryName: ".\(id)",
-            configDirEnvVar: nil, authLoginCommand: nil, installCommand: nil,
-            sessionSubdirectories: [], ansiColor: ""
-        )
+    private struct TestTool: AITool {
+        let id: String
+        var displayName: String
+        var configDirEnvVar: String?
+    }
+
+    private func tool(_ id: String) -> TestTool {
+        TestTool(id: id, displayName: id)
     }
 
     @Test("a fresh registry knows nothing")
@@ -31,6 +33,20 @@ struct AIToolRegistryTests {
         #expect(registry.tool(id: "codex") == nil)
     }
 
+    /// A registry holds `any AITool`, so what comes back out has to still carry
+    /// the conformer's own answers — including the ones it left to the defaults.
+    @Test("a conformer survives the round trip through the registry")
+    func conformerRoundTrips() {
+        let registry = AIToolRegistry()
+        registry.register(TestTool(id: "codex", displayName: "Codex CLI"))
+
+        let recovered = registry.tool(id: "codex")
+        #expect(recovered?.id == "codex")
+        #expect(recovered?.displayName == "Codex CLI")
+        #expect(recovered?.configDirectoryName == ".codex")
+        #expect(recovered?.supportsSetup == false)
+    }
+
     /// Several call sites iterate tools to build user-facing output. Arbitrary
     /// order would make that output differ run to run.
     @Test("all is sorted by id regardless of registration order")
@@ -47,11 +63,10 @@ struct AIToolRegistryTests {
     func reregisterReplaces() {
         let registry = AIToolRegistry()
         registry.register(tool("claude"))
-        registry.register(AITool(
-            id: "claude", displayName: "Claude Code",
-            configDirectoryName: ".claude", configDirEnvVar: "CLAUDE_CONFIG_DIR",
-            authLoginCommand: nil, installCommand: nil,
-            sessionSubdirectories: [], ansiColor: ""
+        registry.register(TestTool(
+            id: "claude",
+            displayName: "Claude Code",
+            configDirEnvVar: "CLAUDE_CONFIG_DIR"
         ))
 
         #expect(registry.all.count == 1)
