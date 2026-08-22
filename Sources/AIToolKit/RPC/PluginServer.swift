@@ -54,8 +54,19 @@ public enum PluginServer {
         while let line = readLine(strippingNewline: true) {
             guard !line.isEmpty else { continue }
             guard let out = handle(line: Data(line.utf8), tool: tool) else { continue }
-            FileHandle.standardOutput.write(out)
-            FileHandle.standardOutput.write(Data("\n".utf8))
+            // The throwing variant, not `write(_:)`: on a closed pipe (the
+            // host has exited mid-reply) `write(_:)` raises an Objective-C
+            // exception that Swift cannot catch, taking the plugin down
+            // with a crash report over something that is not a bug — the
+            // host is simply gone. `write(contentsOf:)` reports the same
+            // condition as a thrown Swift error instead, which is caught
+            // below and treated as the ordinary end of the session.
+            do {
+                try FileHandle.standardOutput.write(contentsOf: out)
+                try FileHandle.standardOutput.write(contentsOf: Data("\n".utf8))
+            } catch {
+                break
+            }
         }
     }
 }
