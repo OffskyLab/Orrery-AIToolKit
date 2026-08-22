@@ -291,6 +291,15 @@ plugin implements, so the host never pays a round trip for a capability that
 is not there. `-32601 Method not found` is the standard answer for one that
 slipped through.
 
+**Request ids are `Int`, not the full JSON-RPC 2.0 id space.** The spec
+permits a string id as well as a number, but this package types `id` as
+`Int` on the request and `Int?` on the response. A non-Swift plugin author
+who echoes the host's id back as `"1"` instead of `1` gets
+`JSONRPCError.malformedResponse` with nothing pointing at why. Since this
+package is itself the conformance suite a third-party plugin is written
+against, that narrowing belongs in writing, not left for an implementer to
+discover by trial and error.
+
 ### A plugin's lifecycle, and where it can end up
 
 ```mermaid
