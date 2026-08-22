@@ -197,11 +197,11 @@ Anything the *host* decides. Account pools, credential storage policy,
 directory sharing — those live in the host, because they are its inventions,
 not the tool's.
 
-## Direction: dispatch is a detail
+## Dispatch is a detail
 
-> **Not implemented.** Everything in this section is design, recorded here so
-> the shipped interface can be judged against where it is going. Nothing below
-> exists in `0.0.1-dev.3`, which is in-process only.
+The JSON-RPC layer described in this section shipped in `0.0.1-dev.4`: the
+transport abstraction, JSON-RPC 2.0 as the wire, and the forwarding proxy that
+makes a remote tool indistinguishable from a local one at the call site.
 
 A framework is an architecture of method calls. Whether a call lands in this
 process or another one is a dispatch choice, not a change of design — and RPC
@@ -300,6 +300,16 @@ package is itself the conformance suite a third-party plugin is written
 against, that narrowing belongs in writing, not left for an implementer to
 discover by trial and error.
 
+**The transport shipped today is a spawned child, not a socket.** Every call
+goes through `StdioTransport`: a process spawned, `initialize`d, and used —
+the "stdio pipes" box in the diagram above, not the "AF_UNIX socket" one. A
+persistent transport is deliberately unbuilt. The protocol permits it — that
+is the point of layering JSON-RPC under `AITool` instead of wiring the two
+together — but nothing spawns it until a measured workload demands it. A
+spawn-initialize-describe round trip measures at roughly 7.6 ms median today,
+and that number, not intuition about which tool "feels" hot, is what the
+decision to build a socket waits on.
+
 ### A plugin's lifecycle, and where it can end up
 
 ```mermaid
@@ -379,7 +389,12 @@ It is also why `AITool` refines `Sendable` alone. A protocol carrying
 `Codable` could not be conformed to by a forwarding proxy without contortion;
 serialization belongs to a concrete wire type, not to the interface.
 
-### A tool knows how to take its own config directory apart
+## Direction: a tool decomposes its own config directory
+
+> **Not implemented.** This section is design, recorded here so the shipped
+> interface can be judged against where it is going. The directory
+> classification described below does not exist yet — the dispatch layer
+> above it does, as of `0.0.1-dev.4`.
 
 A CLI tool installs one config directory and mixes two different things into
 it: who you are, and what you have accumulated. A host that wants one identity
