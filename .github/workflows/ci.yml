@@ -36,3 +36,22 @@ jobs:
             exit 1
           fi
           echo "No escape hatches found."
+
+  # macos-latest never catches a Linux-only build break: Foundation
+  # re-exports Darwin and Dispatch on Apple platforms but not on Linux, so
+  # code that leans on that re-export (`read(2)`, `errno`, `DispatchQueue`)
+  # compiles here and nowhere else. The only Linux build in the whole
+  # system used to be orrery's release workflow, which runs at tag push —
+  # discovering a break there means discovering it at release time. This
+  # job moves that discovery to every PR instead.
+  build-and-test-linux:
+    runs-on: ubuntu-latest
+    container: swift:6.0-jammy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test

@@ -1,4 +1,10 @@
 import Foundation
+import Dispatch
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 /// A transport backed by a spawned child process speaking line-delimited JSON
 /// on its stdin and stdout.
