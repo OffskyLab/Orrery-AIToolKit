@@ -1,0 +1,38 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      # This package promises strict Swift 6 concurrency with no escape
+      # hatches. A promise nothing checks is a promise that decays, so the
+      # check lives here rather than in whoever remembers to run it.
+      - name: Build under complete concurrency checking, warnings as errors
+        run: swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warnings-as-errors
+
+      # `@unchecked Sendable`, `@preconcurrency` and `nonisolated(unsafe)` are
+      # banned outright. The compiler cannot enforce that — they are legal
+      # Swift — so grep does. Doc comments explaining why an escape hatch is
+      # NOT used are legitimate and must not trip this, hence the match on
+      # attribute syntax at the start of a line's code rather than anywhere in
+      # the file.
+      - name: Reject concurrency escape hatches
+        run: |
+          if grep -rnE '^[^/]*(@unchecked[[:space:]]+Sendable|@preconcurrency|nonisolated\(unsafe\))' Sources Tests; then
+            echo "::error::A concurrency escape hatch reached the source. This package does not use them."
+            exit 1
+          fi
+          echo "No escape hatches found."
