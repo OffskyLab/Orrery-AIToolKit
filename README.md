@@ -200,8 +200,9 @@ not the tool's.
 ## Dispatch is a detail
 
 The JSON-RPC layer described in this section shipped in `0.0.1-dev.4`: the
-transport abstraction, JSON-RPC 2.0 as the wire, and the forwarding proxy that
-makes a remote tool indistinguishable from a local one at the call site.
+transport abstraction, JSON-RPC 2.0 as the wire, and the client-side machinery
+that a host uses to build a forwarding proxy making a remote tool
+indistinguishable from a local one at the call site.
 
 A framework is an architecture of method calls. Whether a call lands in this
 process or another one is a dispatch choice, not a change of design — and RPC
