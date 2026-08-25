@@ -61,6 +61,45 @@ struct StdioTransportTests {
         await transport.terminate()
     }
 
+    /// `receiveLine`'s contract is that nil means the peer is gone, and a
+    /// terminated transport is the clearest case of that. Reaching the
+    /// descriptor instead used to abort the host: `FileHandle.fileDescriptor`
+    /// raises an Objective-C exception once the handle is closed, and Swift
+    /// cannot catch it.
+    ///
+    /// The same hazard this file already documented for `write(_:)` — closing
+    /// the read side to stop leaking descriptors simply moved it to the other
+    /// end of the pipe. A fix reintroducing the bug it was modelled on is worth
+    /// a test rather than a comment.
+    @Test("reading after terminate reports the peer as gone rather than crashing")
+    func readAfterTerminateReturnsNil() async throws {
+        let transport = try makeTransport(behaviour: "ok")
+        let conn = JSONRPCConnection(transport: transport, timeout: .seconds(5))
+        _ = try await conn.call("tool/describe", nil)
+
+        await transport.terminate()
+
+        #expect(try await transport.receiveLine() == nil)
+        // And it stays that way — a caller polling after close must not get an
+        // error where it expects a clean end.
+        #expect(try await transport.receiveLine() == nil)
+    }
+
+    /// Terminating twice must not double-close a descriptor. The numbers are
+    /// reused by the OS, so a second `close(2)` on the same value can shut
+    /// something unrelated that has since been handed the same slot.
+    @Test("terminating twice is harmless")
+    func terminateIsIdempotent() async throws {
+        let transport = try makeTransport(behaviour: "ok")
+        let conn = JSONRPCConnection(transport: transport, timeout: .seconds(5))
+        _ = try await conn.call("tool/describe", nil)
+
+        await transport.terminate()
+        await transport.terminate()
+
+        #expect(try await transport.receiveLine() == nil)
+    }
+
     /// The peer that the old design could not survive: it reads the request,
     /// ignores SIGTERM, and never answers. Killing it politely does nothing, so
     /// anything that depended on the peer dying to unblock a read would wait

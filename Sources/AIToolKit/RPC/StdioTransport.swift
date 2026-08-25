@@ -39,7 +39,24 @@ public actor StdioTransport: Transport {
     /// the caller as a timeout rather than as the data-loss bug it is.
     private var pending = Data()
 
+    /// The raw descriptors, captured once at init.
+    ///
+    /// The read path uses `poll`/`read` directly, so `FileHandle` adds nothing
+    /// but a way to crash: asking a closed handle for its `fileDescriptor`
+    /// raises an Objective-C exception that Swift cannot catch. Holding the
+    /// numbers means `terminate()` can close them without leaving a live reader
+    /// holding a handle that will abort the process when touched.
+    private let readFD: Int32
+    private let writeFD: Int32
+
+    /// Set by `terminate()`. Read before touching a descriptor, since after
+    /// termination those numbers are closed and may since have been reused by
+    /// something else entirely.
+    private var isTerminated = false
+
     public init(executable: URL, arguments: [String], environment: [String: String]) {
+        readFD = outPipe.fileHandleForReading.fileDescriptor
+        writeFD = inPipe.fileHandleForWriting.fileDescriptor
         process.executableURL = executable
         process.arguments = arguments
         var env = ProcessInfo.processInfo.environment
@@ -64,12 +81,29 @@ public actor StdioTransport: Transport {
         // over one dead plugin. `write(contentsOf:)` reports the same
         // condition as a thrown Swift error instead, which `send`'s callers
         // already handle.
+        // Same reason `receiveLine` checks: once terminated the handle is
+        // backed by a closed descriptor, and touching it raises rather than
+        // throws.
+        guard !isTerminated else { throw TransportError.noPendingReply }
+
         try inPipe.fileHandleForWriting.write(contentsOf: line)
         try inPipe.fileHandleForWriting.write(contentsOf: Data("\n".utf8))
     }
 
     public func receiveLine() async throws -> Data? {
-        let fd = outPipe.fileHandleForReading.fileDescriptor
+        // A terminated transport reports the peer as gone, which is what the
+        // protocol says nil means. Reaching the descriptor instead would be a
+        // crash, not an error: `FileHandle.fileDescriptor` raises an
+        // Objective-C exception once the handle is closed, and nothing in Swift
+        // can catch that. The same shape as the `write(_:)` hazard this file
+        // already documents — closing the read side simply moved it to the
+        // other end of the pipe.
+        if isTerminated { return nil }
+
+        // Captured once at init rather than read from the `FileHandle` each
+        // call, so the descriptor this loop polls cannot be pulled out from
+        // under it by a concurrent `terminate()`.
+        let fd = readFD
         while true {
             while let nl = pending.firstIndex(of: UInt8(ascii: "\n")) {
                 let line = pending[pending.startIndex..<nl]
@@ -165,19 +199,47 @@ public actor StdioTransport: Transport {
     /// process contract in the README, and the orphan outlives this call. That
     /// is the plugin's defect; the host's obligation is only to keep working,
     /// which it now does.
-    public func terminate() {
-        if process.isRunning {
+    /// Idempotent, and safe to call while a `receiveLine` is in flight.
+    ///
+    /// The waits are `await Task.sleep`, not `usleep`. A synchronous sleep here
+    /// would hold the actor for its whole duration — blocking every other call
+    /// on this transport, `receiveLine` included — and would also park a thread
+    /// of the cooperative pool, which is a scarce resource shared with every
+    /// other task in the process.
+    public func terminate() async {
+        guard !isTerminated else { return }
+        isTerminated = true
+
+        if started && process.isRunning {
             process.terminate()
-            // Brief grace period, then insist.
-            let deadline = Date().addingTimeInterval(0.5)
-            while process.isRunning && Date() < deadline {
-                usleep(10_000)
-            }
-            if process.isRunning {
+
+            // Ask first. A well-behaved plugin exits on SIGTERM.
+            if await !waitForExit(within: .milliseconds(500)) {
                 kill(process.processIdentifier, SIGKILL)
+                // SIGKILL cannot be declined, but it is still asynchronous:
+                // `kill(2)` returns once the signal is posted, not once the
+                // process is gone. Waiting here is what lets a caller treat
+                // this returning as "the child is finished" — the previous
+                // version returned immediately and left that untrue.
+                _ = await waitForExit(within: .milliseconds(500))
             }
         }
-        try? inPipe.fileHandleForWriting.close()
-        try? outPipe.fileHandleForReading.close()
+
+        // `close(2)` on the raw numbers rather than `FileHandle.close()`: the
+        // handles stay untouched, so any code still holding one cannot trip the
+        // uncatchable exception that reading a closed handle raises.
+        close(writeFD)
+        close(readFD)
+    }
+
+    /// Polls for the child's exit in short async slices. Returns whether it
+    /// actually exited before the deadline.
+    private func waitForExit(within duration: Duration) async -> Bool {
+        let deadline = ContinuousClock.now + duration
+        while ContinuousClock.now < deadline {
+            if !process.isRunning { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return !process.isRunning
     }
 }
