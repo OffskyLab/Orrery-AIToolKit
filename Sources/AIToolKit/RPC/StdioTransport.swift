@@ -80,7 +80,7 @@ public actor StdioTransport: Transport {
                     return Data(line)
                 }
             }
-            let chunk = try await Self.blockingRead(fd: fd)
+            let chunk = try await Self.interruptibleRead(fd: fd)
             if chunk.isEmpty {
                 if pending.isEmpty { return nil }
                 let leftover = pending
@@ -91,43 +91,93 @@ public actor StdioTransport: Transport {
         }
     }
 
-    /// Reads one chunk from `fd` on a background thread rather than on the
-    /// actor's own executor.
+    /// How long each `poll` waits before handing control back so cancellation
+    /// can be observed. Short enough that a cancelled call unwinds promptly,
+    /// long enough that an idle transport is not spinning.
+    private static let pollSliceMilliseconds: Int32 = 50
+
+    /// Reads one chunk from `fd`, giving up promptly when the task is
+    /// cancelled.
     ///
-    /// `read(2)` blocks for as long as the peer has nothing to say, and
-    /// task cancellation cannot interrupt a blocking syscall — only closing
-    /// or killing the peer does. Running that blocking call directly inside
-    /// an actor-isolated method would additionally wedge every other call on
-    /// this actor for the same duration, `terminate()` included: an actor
-    /// runs its isolated methods strictly one at a time on its own executor,
-    /// so a synchronous block there has no way to yield to a queued
-    /// `terminate()` call, and the very call meant to end the block would
-    /// never get to run. `nonisolated` — actor type members are nonisolated
-    /// by default — and a suspension point at the `await` above is what lets
-    /// `terminate()` proceed while this is stuck.
-    private static func blockingRead(fd: Int32) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .utility).async {
-                var buffer = [UInt8](repeating: 0, count: 65_536)
-                let n = buffer.withUnsafeMutableBytes { raw in
-                    read(fd, raw.baseAddress, raw.count)
-                }
-                if n < 0 {
-                    continuation.resume(
-                        throwing: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO))
-                } else {
-                    continuation.resume(returning: Data(buffer[0..<n]))
-                }
+    /// A plain blocking `read(2)` cannot be interrupted by task cancellation —
+    /// only closing or killing the peer ends it. That put the whole design
+    /// upside down: a timeout could not actually stop a read, so callers had to
+    /// arrange for something *else* to kill the plugin, and the caller that did
+    /// so then killed healthy plugins too. The fix is not a better killer. It
+    /// is to stop issuing a syscall that nothing can take back.
+    ///
+    /// So the descriptor is non-blocking and `poll` waits in short slices.
+    /// Between slices the task's cancellation state is observable, which makes
+    /// the read cooperatively cancellable and lets an ordinary timeout do its
+    /// job. It also removes the need for the peer to cooperate at all: a plugin
+    /// that ignores SIGTERM, or that leaves a grandchild holding the pipe, no
+    /// longer wedges the host — the host simply stops waiting.
+    private static func interruptibleRead(fd: Int32) async throws -> Data {
+        // Set once per call rather than at spawn: the flag belongs to the open
+        // file description, and leaving the descriptor blocking for anyone else
+        // who might inherit it is the safer default.
+        let flags = fcntl(fd, F_GETFL)
+        if flags != -1 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
+
+        var buffer = [UInt8](repeating: 0, count: 65_536)
+
+        while true {
+            try Task.checkCancellation()
+
+            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, pollSliceMilliseconds)
+
+            if ready < 0 {
+                if errno == EINTR { continue }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
+            if ready == 0 {
+                // Nothing yet. Yield so a cancelled task is not starved by a
+                // peer that never speaks.
+                await Task.yield()
+                continue
+            }
+
+            let n = buffer.withUnsafeMutableBytes { raw in
+                read(fd, raw.baseAddress, raw.count)
+            }
+            if n < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { continue }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            // n == 0 is EOF, and an empty Data is how the caller reads that.
+            return Data(buffer[0..<n])
         }
     }
 
-    /// Ends the child process. Callers that exercise a hanging or otherwise
-    /// unresponsive plugin must call this: `receiveLine` blocks on a `read(2)`
-    /// that task cancellation cannot interrupt, so a timed-out call leaves
-    /// the child running and the read blocked until something kills the
-    /// process.
+    /// Ends the child process and releases this side of the pipes.
+    ///
+    /// No longer load-bearing for unblocking a read — `interruptibleRead` gives
+    /// up on its own — so this is purely about not leaving a process behind.
+    ///
+    /// SIGTERM is asked first and SIGKILL follows if the child is still there,
+    /// because a plugin may trap or ignore the polite one. The old
+    /// `if process.isRunning` guard is gone: when the child has already exited
+    /// but something it spawned still holds the pipe, that guard skipped the
+    /// descriptor cleanup as well, which was the one part still worth doing.
+    ///
+    /// A plugin that leaves a grandchild holding stdout is violating the
+    /// process contract in the README, and the orphan outlives this call. That
+    /// is the plugin's defect; the host's obligation is only to keep working,
+    /// which it now does.
     public func terminate() {
-        if process.isRunning { process.terminate() }
+        if process.isRunning {
+            process.terminate()
+            // Brief grace period, then insist.
+            let deadline = Date().addingTimeInterval(0.5)
+            while process.isRunning && Date() < deadline {
+                usleep(10_000)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+            }
+        }
+        try? inPipe.fileHandleForWriting.close()
+        try? outPipe.fileHandleForReading.close()
     }
 }

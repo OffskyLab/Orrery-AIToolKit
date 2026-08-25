@@ -40,23 +40,43 @@ struct StdioTransportTests {
     func hangingPluginTimesOut() async throws {
         let transport = try makeTransport(behaviour: "hang")
         let conn = JSONRPCConnection(transport: transport, timeout: .milliseconds(300))
-        // `JSONRPCConnection.call` uses a task group internally, and a task
-        // group cannot return until every child task it started — including
-        // the one blocked reading the hung child's reply — has actually
-        // finished, not merely been asked to cancel. Task cancellation
-        // cannot interrupt that blocking read; only killing the process
-        // does. So `conn.call` itself will not produce its timeout error
-        // until something kills the process concurrently with this call —
-        // calling `terminate()` only after `#expect` returns would never
-        // run, because `#expect` would never return.
-        let killer = Task {
-            try? await Task.sleep(for: .milliseconds(600))
-            await transport.terminate()
-        }
+
+        // No killer task, and that absence is the assertion.
+        //
+        // This test used to spawn one, with a comment explaining that a task
+        // group cannot return until every child *finishes* and that nothing
+        // could finish a blocking `read(2)` except killing the peer. That was
+        // an accurate description of a design defect: a timeout that cannot
+        // stop the thing it is timing is not a timeout. It also pushed the
+        // responsibility outward, and the caller that took it on ended up
+        // killing healthy plugins too.
+        //
+        // The read is now cancellable on its own, so the ordinary timeout is
+        // sufficient. If this ever needs a killer again, the read has stopped
+        // being interruptible — the test hanging is the signal.
         await #expect(throws: JSONRPCError.timedOut(method: "tool/describe")) {
             try await conn.call("tool/describe", nil)
         }
-        await killer.value
+
+        await transport.terminate()
+    }
+
+    /// The peer that the old design could not survive: it reads the request,
+    /// ignores SIGTERM, and never answers. Killing it politely does nothing, so
+    /// anything that depended on the peer dying to unblock a read would wait
+    /// forever. The host must now give up on its own.
+    @Test("a plugin that ignores SIGTERM still cannot hold the host")
+    func sigtermIgnoringPluginStillTimesOut() async throws {
+        let transport = try makeTransport(behaviour: "hang-ignoring-sigterm")
+        let conn = JSONRPCConnection(transport: transport, timeout: .milliseconds(300))
+
+        await #expect(throws: JSONRPCError.timedOut(method: "tool/describe")) {
+            try await conn.call("tool/describe", nil)
+        }
+
+        // terminate() escalates to SIGKILL, so this returns even though the
+        // child refuses the polite signal.
+        await transport.terminate()
     }
 
     @Test("a plugin that dies mid-conversation causes a throw, not a host crash")

@@ -18,6 +18,16 @@ case "hang":
     // Accept the request, never answer. The host's timeout must fire.
     while readLine() != nil { Thread.sleep(forTimeInterval: 3600) }
 
+case "hang-ignoring-sigterm":
+    // The peer the old design could not survive. Unblocking a read used to
+    // depend on the child dying when asked; a child that declines makes that
+    // approach wait forever, so the host has to stop waiting by itself.
+    //
+    // SIGKILL cannot be trapped, which is why terminate() escalates to it —
+    // otherwise this fixture would outlive the test run.
+    signal(SIGTERM, SIG_IGN)
+    while readLine() != nil { Thread.sleep(forTimeInterval: 3600) }
+
 case "garbage":
     while readLine() != nil {
         FileHandle.standardOutput.write(Data("this is not json\n".utf8))

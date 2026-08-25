@@ -178,6 +178,35 @@ and decoding would need a concrete type anyway — recovering one from a stored
 id needs an id→type table, which is what `AIToolRegistry` is. A host encodes
 the `id` and reads it back with `registry.tool(id:)`.
 
+## What a plugin process must do
+
+Describing a tool is a protocol conformance. Being a *plugin* is also a promise
+about how the process behaves, and that half has to be written down: a host
+receives a path to an executable and cannot inspect whether the SDK was used.
+
+Calling ``PluginServer/serve(tool:)`` satisfies all of this. The rules exist for
+plugins that do not, or that wrap something else.
+
+- **stdout carries the protocol and nothing else.** Diagnostics go to stderr. A
+  stray `print` on stdout desynchronises the stream. A host is expected to skip
+  lines it cannot parse rather than fail, but do not rely on that — a partial
+  line still corrupts the reply it was interleaved with.
+- **Exit when stdin closes.** That is the host going away. `readLine()`
+  returning nil is the signal, and `serve(tool:)` returns on it.
+- **Do not fork children that inherit stdout or stdin.** A backgrounded helper
+  keeps the host's pipe open after the plugin exits, so the host cannot tell
+  the difference between "still working" and "gone". If a plugin needs a helper,
+  give it its own descriptors or detach it fully.
+- **Answer or fail; do not stall.** A host applies a timeout and will give up. A
+  plugin that takes longer than the work warrants should return an error rather
+  than hold the connection.
+
+A host must still survive a plugin that ignores every line of this — it is
+running someone else's binary. But surviving is a different job from
+accommodating, and the difference decides where a fix belongs. When a
+non-conforming plugin leaks its own process, that is the plugin's defect, and
+the host's obligation is to keep working, not to prevent it.
+
 ## Concurrency
 
 Strict Swift 6, no escape hatches: no `@unchecked Sendable`,
