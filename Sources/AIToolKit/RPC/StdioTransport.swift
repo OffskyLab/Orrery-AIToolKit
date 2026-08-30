@@ -47,7 +47,6 @@ public actor StdioTransport: Transport {
     /// numbers means `terminate()` can close them without leaving a live reader
     /// holding a handle that will abort the process when touched.
     private let readFD: Int32
-    private let writeFD: Int32
 
     /// Set by `terminate()`. Read before touching a descriptor, since after
     /// termination those numbers are closed and may since have been reused by
@@ -56,7 +55,11 @@ public actor StdioTransport: Transport {
 
     public init(executable: URL, arguments: [String], environment: [String: String]) {
         readFD = outPipe.fileHandleForReading.fileDescriptor
-        writeFD = inPipe.fileHandleForWriting.fileDescriptor
+        // Non-blocking once, at construction. `poll` decides when data is
+        // there; the flag only stops `read` itself from blocking if it races
+        // the poll.
+        let flags = fcntl(readFD, F_GETFL)
+        if flags != -1 { _ = fcntl(readFD, F_SETFL, flags | O_NONBLOCK) }
         process.executableURL = executable
         process.arguments = arguments
         var env = ProcessInfo.processInfo.environment
@@ -100,10 +103,6 @@ public actor StdioTransport: Transport {
         // other end of the pipe.
         if isTerminated { return nil }
 
-        // Captured once at init rather than read from the `FileHandle` each
-        // call, so the descriptor this loop polls cannot be pulled out from
-        // under it by a concurrent `terminate()`.
-        let fd = readFD
         while true {
             while let nl = pending.firstIndex(of: UInt8(ascii: "\n")) {
                 let line = pending[pending.startIndex..<nl]
@@ -114,7 +113,7 @@ public actor StdioTransport: Transport {
                     return Data(line)
                 }
             }
-            let chunk = try await Self.interruptibleRead(fd: fd)
+            let chunk = try await readChunk()
             if chunk.isEmpty {
                 if pending.isEmpty { return nil }
                 let leftover = pending
@@ -126,12 +125,12 @@ public actor StdioTransport: Transport {
     }
 
     /// How long each `poll` waits before handing control back so cancellation
-    /// can be observed. Short enough that a cancelled call unwinds promptly,
-    /// long enough that an idle transport is not spinning.
+    /// and termination can be observed. Short enough that either unwinds
+    /// promptly, long enough that an idle transport is not spinning.
     private static let pollSliceMilliseconds: Int32 = 50
 
-    /// Reads one chunk from `fd`, giving up promptly when the task is
-    /// cancelled.
+    /// Reads one chunk, giving up promptly when the task is cancelled or the
+    /// transport is terminated.
     ///
     /// A plain blocking `read(2)` cannot be interrupted by task cancellation —
     /// only closing or killing the peer ends it. That put the whole design
@@ -140,47 +139,56 @@ public actor StdioTransport: Transport {
     /// so then killed healthy plugins too. The fix is not a better killer. It
     /// is to stop issuing a syscall that nothing can take back.
     ///
-    /// So the descriptor is non-blocking and `poll` waits in short slices.
-    /// Between slices the task's cancellation state is observable, which makes
-    /// the read cooperatively cancellable and lets an ordinary timeout do its
-    /// job. It also removes the need for the peer to cooperate at all: a plugin
-    /// that ignores SIGTERM, or that leaves a grandchild holding the pipe, no
-    /// longer wedges the host — the host simply stops waiting.
-    private static func interruptibleRead(fd: Int32) async throws -> Data {
-        // Set once per call rather than at spawn: the flag belongs to the open
-        // file description, and leaving the descriptor blocking for anyone else
-        // who might inherit it is the safer default.
-        let flags = fcntl(fd, F_GETFL)
-        if flags != -1 { _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK) }
-
+    /// **Actor-isolated on purpose, and that is what makes closing safe.** An
+    /// earlier version was `static` and took a raw descriptor, which let the
+    /// loop keep polling a number after `terminate()` had closed it — and file
+    /// descriptors are reused, so the next slice could poll and consume an
+    /// unrelated pipe that had since been handed the same number. Nothing
+    /// crashes; the reader just quietly reads someone else's data, and if that
+    /// data happens to parse it is accepted as a plugin's reply.
+    ///
+    /// Isolation removes the race rather than narrowing it. `poll` runs while
+    /// the actor is held, so `terminate()` cannot interleave with a syscall on
+    /// the descriptor; the suspension between slices is the only place it can
+    /// run, and by then this loop is about to re-check `isTerminated` and stop
+    /// touching the descriptor for good.
+    private func readChunk() async throws -> Data {
         var buffer = [UInt8](repeating: 0, count: 65_536)
 
         while true {
             try Task.checkCancellation()
+            // Re-checked every slice, not only on entry. Entry-only was the
+            // hole: a read already inside the loop never learned the transport
+            // had gone away.
+            if isTerminated { return Data() }
 
-            var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&descriptor, 1, pollSliceMilliseconds)
+            var descriptor = pollfd(fd: readFD, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&descriptor, 1, Self.pollSliceMilliseconds)
 
             if ready < 0 {
                 if errno == EINTR { continue }
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            if ready == 0 {
-                // Nothing yet. Yield so a cancelled task is not starved by a
-                // peer that never speaks.
-                await Task.yield()
-                continue
+            if ready > 0 {
+                // POLLNVAL means the descriptor is not open — treat it as the
+                // peer being gone rather than reading it and surfacing EBADF.
+                if descriptor.revents & Int16(POLLNVAL) != 0 { return Data() }
+
+                let n = buffer.withUnsafeMutableBytes { raw in
+                    read(readFD, raw.baseAddress, raw.count)
+                }
+                if n < 0 {
+                    if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { continue }
+                    if errno == EBADF { return Data() }
+                    throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                }
+                // n == 0 is EOF, and an empty Data is how the caller reads that.
+                return Data(buffer[0..<n])
             }
 
-            let n = buffer.withUnsafeMutableBytes { raw in
-                read(fd, raw.baseAddress, raw.count)
-            }
-            if n < 0 {
-                if errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR { continue }
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-            }
-            // n == 0 is EOF, and an empty Data is how the caller reads that.
-            return Data(buffer[0..<n])
+            // Nothing yet. Suspending here is what lets `terminate()` run, and
+            // is also the point at which cancellation becomes observable.
+            await Task.yield()
         }
     }
 
@@ -228,8 +236,23 @@ public actor StdioTransport: Transport {
         // `close(2)` on the raw numbers rather than `FileHandle.close()`: the
         // handles stay untouched, so any code still holding one cannot trip the
         // uncatchable exception that reading a closed handle raises.
-        close(writeFD)
-        close(readFD)
+        // Closed through the `FileHandle`s, not with `close(2)` on the raw
+        // numbers.
+        //
+        // `Pipe` hands out handles created with `closeOnDealloc: true`, so they
+        // close their remembered descriptor when they are released. Closing the
+        // number directly leaves that intact: the descriptor is freed, the OS
+        // hands the number to whatever opens next, and then the handle's deinit
+        // closes it a second time — shutting an unrelated file or socket
+        // belonging to some other part of the program. Two owners of one
+        // descriptor with no coordination between them; `FileHandle.close()`
+        // marks the handle closed so its deinit does nothing.
+        //
+        // The reason this can be done safely at all is that `readChunk` is
+        // actor-isolated: no read is inside a syscall on these descriptors
+        // while this runs.
+        try? inPipe.fileHandleForWriting.close()
+        try? outPipe.fileHandleForReading.close()
     }
 
     /// Polls for the child's exit in short async slices. Returns whether it

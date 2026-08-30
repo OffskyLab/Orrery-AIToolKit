@@ -141,3 +141,72 @@ struct StdioTransportTests {
         }
     }
 }
+
+// MARK: - Termination while a read is in flight
+
+extension StdioTransportTests {
+
+    /// A read that has already entered the poll loop must learn the transport
+    /// went away.
+    ///
+    /// The implementation this pins replaced an entry-only `isTerminated` check
+    /// with a per-slice one, and started treating `POLLNVAL`/`EBADF` as "the
+    /// peer is gone" rather than surfacing them. Against the previous version
+    /// this does not hang — it *throws*: `terminate()` closed the descriptor,
+    /// the next `poll` returned `POLLNVAL`, and the loop read anyway and got
+    /// `EBADF`, which reached the caller as a `POSIXError`. An ordinary shutdown
+    /// is not an error, so the assertion is that it ends quietly.
+    @Test("a receiveLine already in flight ends quietly when terminate lands")
+    func terminateEndsAnInFlightRead() async throws {
+        let transport = try makeTransport(behaviour: "hang")
+
+        async let inFlight: Data? = transport.receiveLine()
+        // Long enough for the read to be inside the poll loop rather than still
+        // on its way there — an entry-only check would have caught it at the
+        // door and proved nothing.
+        try await Task.sleep(for: .milliseconds(200))
+        await transport.terminate()
+
+        let line = try await inFlight
+        #expect(line == nil, "a terminated transport has nothing left to report")
+    }
+
+    /// `terminate()` must not close a descriptor number that something else may
+    /// already own.
+    ///
+    /// `Pipe` hands out `FileHandle`s created with `closeOnDealloc: true`, so
+    /// closing the raw number leaves a second owner holding the same number: the
+    /// OS reissues it, and the handle's `deinit` later closes it again — shutting
+    /// an unrelated file belonging to some other part of the program.
+    ///
+    /// The window is opened deliberately. `terminate()` frees the numbers, the
+    /// probes below claim them (descriptors are handed out lowest-available, so
+    /// probes opened immediately afterwards take exactly those), and only then is
+    /// the transport released so its handles deinit. Against the previous
+    /// implementation a probe is closed underneath us and `fcntl` reports
+    /// `EBADF`.
+    @Test("terminate does not close a descriptor a second time")
+    func terminateDoesNotDoubleClose() async throws {
+        var transport: StdioTransport? = try makeTransport(behaviour: "hang")
+        // A live child, so the pipes are genuinely open before they are freed.
+        try await Task.sleep(for: .milliseconds(100))
+        await transport?.terminate()
+
+        var probes: [Int32] = []
+        defer { for fd in probes where fcntl(fd, F_GETFD) != -1 { close(fd) } }
+        for _ in 0..<8 {
+            let fd = open("/dev/null", O_RDONLY)
+            if fd >= 0 { probes.append(fd) }
+        }
+        #expect(!probes.isEmpty, "no probes opened; the test proves nothing without them")
+
+        // Releasing the actor runs the pipes' `FileHandle` deinits, which is
+        // where the second close happens.
+        transport = nil
+        try await Task.sleep(for: .milliseconds(100))
+
+        let closed = probes.filter { fcntl($0, F_GETFD) == -1 }
+        #expect(closed.isEmpty,
+                "descriptors \(closed) were closed by the transport's deinit after being reissued elsewhere")
+    }
+}
