@@ -16,7 +16,11 @@ let behaviour = ProcessInfo.processInfo.environment["AITOOLKIT_TEST_BEHAVIOUR"] 
 switch behaviour {
 case "hang":
     // Accept the request, never answer. The host's timeout must fire.
-    while readLine() != nil { Thread.sleep(forTimeInterval: 3600) }
+    // The C `sleep`, not `Task.sleep`: this fixture exists to be a plugin
+    // that blocks and declines to cooperate, and a cooperative suspension is
+    // precisely what it must not be. `Thread.sleep` is unavailable now that
+    // top-level code here is async, and would have been the same idea.
+    while readLine() != nil { sleep(3600) }
 
 case "hang-ignoring-sigterm":
     // The peer the old design could not survive. Unblocking a read used to
@@ -26,7 +30,11 @@ case "hang-ignoring-sigterm":
     // SIGKILL cannot be trapped, which is why terminate() escalates to it —
     // otherwise this fixture would outlive the test run.
     signal(SIGTERM, SIG_IGN)
-    while readLine() != nil { Thread.sleep(forTimeInterval: 3600) }
+    // The C `sleep`, not `Task.sleep`: this fixture exists to be a plugin
+    // that blocks and declines to cooperate, and a cooperative suspension is
+    // precisely what it must not be. `Thread.sleep` is unavailable now that
+    // top-level code here is async, and would have been the same idea.
+    while readLine() != nil { sleep(3600) }
 
 case "garbage":
     while readLine() != nil {
@@ -38,7 +46,7 @@ case "noisy":
     // the first line rather than treat the stream as broken.
     while let line = readLine(strippingNewline: true) {
         FileHandle.standardOutput.write(Data("debug: got a request\n".utf8))
-        if let out = PluginServer.handle(line: Data(line.utf8), tool: TestTool()) {
+        if let out = await PluginServer.handle(line: Data(line.utf8), tool: TestTool()) {
             FileHandle.standardOutput.write(out)
             FileHandle.standardOutput.write(Data("\n".utf8))
         }
@@ -68,7 +76,7 @@ case "crash-after-initialize":
     var seen = false
     while let line = readLine(strippingNewline: true) {
         if seen { exit(1) }
-        if let out = PluginServer.handle(line: Data(line.utf8), tool: TestTool()) {
+        if let out = await PluginServer.handle(line: Data(line.utf8), tool: TestTool()) {
             FileHandle.standardOutput.write(out)
             FileHandle.standardOutput.write(Data("\n".utf8))
         }
@@ -76,5 +84,5 @@ case "crash-after-initialize":
     }
 
 default:
-    PluginServer.serve(tool: TestTool())
+    await PluginServer.serve(tool: TestTool())
 }

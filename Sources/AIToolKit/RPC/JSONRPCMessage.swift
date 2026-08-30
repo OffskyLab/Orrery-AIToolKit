@@ -99,4 +99,15 @@ public enum JSONRPCError: Error, Equatable, Sendable {
     case idMismatch(expected: Int, got: Int?)
 
     public static let methodNotFoundCode = -32601
+
+    /// The method exists and the arguments do not let it run — a copy with no
+    /// destination, say. Distinct from `methodNotFound`, which says the tool
+    /// does not offer the operation at all: one is a caller bug, the other is a
+    /// tool that never claimed the capability.
+    public static let invalidParamsCode = -32602
+
+    /// The operation was attempted and failed. Not an argument problem and not
+    /// an absent method — the tool tried and threw, and a host that has just
+    /// asked for a side effect needs to be able to tell that apart from both.
+    public static let operationFailedCode = -32000
 }

@@ -21,16 +21,16 @@ struct PluginServerTests {
         var ansiColor: String { "\u{1B}[36m" }
     }
 
-    private func reply(to method: String, tool: any AITool = Sample()) throws -> JSONRPCResponse? {
+    private func reply(to method: String, tool: any AITool = Sample()) async throws -> JSONRPCResponse? {
         let req = JSONRPCRequest(id: 1, method: method, params: nil)
         let line = try JSONEncoder().encode(req)
-        guard let out = PluginServer.handle(line: line, tool: tool) else { return nil }
+        guard let out = await PluginServer.handle(line: line, tool: tool) else { return nil }
         return try JSONDecoder().decode(JSONRPCResponse.self, from: out)
     }
 
     @Test("initialize reports the protocol version and its capabilities")
-    func initializeAnswers() throws {
-        let res = try #require(try reply(to: "initialize"))
+    func initializeAnswers() async throws {
+        let res = try #require(try await reply(to: "initialize"))
         guard case .object(let obj) = try #require(res.result) else {
             Issue.record("expected an object result"); return
         }
@@ -42,8 +42,8 @@ struct PluginServerTests {
     }
 
     @Test("tool/describe answers with the tool's own fields")
-    func describeAnswers() throws {
-        let res = try #require(try reply(to: "tool/describe"))
+    func describeAnswers() async throws {
+        let res = try #require(try await reply(to: "tool/describe"))
         guard case .object(let obj) = try #require(res.result) else {
             Issue.record("expected an object result"); return
         }
@@ -53,9 +53,9 @@ struct PluginServerTests {
     }
 
     @Test("tool/describe encodes all eight fields with proper nil handling")
-    func describeEncodesAllFields() throws {
+    func describeEncodesAllFields() async throws {
         let tool = FullFeatured()
-        let res = try #require(try reply(to: "tool/describe", tool: tool))
+        let res = try #require(try await reply(to: "tool/describe", tool: tool))
         guard case .object(let obj) = try #require(res.result) else {
             Issue.record("expected an object result"); return
         }
@@ -73,13 +73,13 @@ struct PluginServerTests {
     }
 
     @Test("an unimplemented method answers -32601 rather than going silent")
-    func unknownMethodIsMethodNotFound() throws {
-        let res = try #require(try reply(to: "tool/nope"))
+    func unknownMethodIsMethodNotFound() async throws {
+        let res = try #require(try await reply(to: "tool/nope"))
         #expect(res.error?.code == -32601)
     }
 
     @Test("an unparseable line produces no reply and does not throw")
-    func garbageLineIsIgnored() {
-        #expect(PluginServer.handle(line: Data("not json".utf8), tool: Sample()) == nil)
+    func garbageLineIsIgnored() async {
+        #expect(await PluginServer.handle(line: Data("not json".utf8), tool: Sample()) == nil)
     }
 }
