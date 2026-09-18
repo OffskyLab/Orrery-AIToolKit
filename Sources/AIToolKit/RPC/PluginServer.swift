@@ -30,6 +30,10 @@ public enum PluginServer {
                 capabilities["tool/copyLoginState"] = .bool(true)
                 capabilities["tool/copyNonLoginSettings"] = .bool(true)
             }
+            if tool is any AIToolIdentityReporting {
+                capabilities["tool/listIdentities"] = .bool(true)
+                capabilities["tool/showIdentity"] = .bool(true)
+            }
             response = JSONRPCResponse(id: request.id, result: .object([
                 "protocolVersion": .string(protocolVersion),
                 "capabilities": .object(capabilities),
@@ -47,6 +51,17 @@ public enum PluginServer {
                 "sessionSubdirectories": .array(d.sessionSubdirectories.map(RPCValue.string)),
                 "ansiColor": .string(d.ansiColor),
             ]), error: nil)
+
+        case "tool/listIdentities", "tool/showIdentity":
+            guard let reporter = tool as? any AIToolIdentityReporting else {
+                response = JSONRPCResponse(
+                    id: request.id, result: nil,
+                    error: .init(code: JSONRPCError.methodNotFoundCode,
+                                 message: "Method not found: \(request.method)"))
+                break
+            }
+            response = await report(request.method, on: reporter,
+                                    params: request.params, id: request.id)
 
         case "tool/copyLoginState", "tool/copyNonLoginSettings":
             // A tool that does not conform genuinely does not offer these, and
@@ -72,6 +87,77 @@ public enum PluginServer {
         return try? JSONEncoder().encode(response)
     }
 
+
+
+    /// Answers one identity question.
+    ///
+    /// The listing's reply is an array positionally aligned with the request, and
+    /// a directory with no login is `.null` *in place*. Compacting it would be the
+    /// worst kind of wrong: every row after the gap still carries a plausible
+    /// identity, just the wrong one, and nothing downstream can detect it.
+    ///
+    /// "No login here" is a result, not an error. A tool that *threw* while
+    /// looking is the error — the same distinction `copyLoginState` draws between
+    /// nothing-to-copy and a copy that failed.
+    private static func report(
+        _ method: String,
+        on tool: any AIToolIdentityReporting,
+        params: RPCParams?,
+        id: Int
+    ) async -> JSONRPCResponse {
+        func encoded(_ identity: LoginIdentity?) -> RPCValue {
+            guard let identity else { return .null }
+            return .object([
+                "email": identity.email.map(RPCValue.string) ?? .null,
+                "plan": identity.plan.map(RPCValue.string) ?? .null,
+            ])
+        }
+        func invalid(_ message: String) -> JSONRPCResponse {
+            JSONRPCResponse(id: id, result: nil,
+                            error: .init(code: JSONRPCError.invalidParamsCode, message: message))
+        }
+
+        do {
+            switch method {
+            case "tool/listIdentities":
+                guard case .array(let raw)? = params?["configDirs"] else {
+                    return invalid("\(method): configDirs is required")
+                }
+                var dirs: [URL] = []
+                for entry in raw {
+                    guard case .string(let path) = entry, !path.isEmpty else {
+                        return invalid("\(method): every configDirs entry must be a path")
+                    }
+                    dirs.append(URL(fileURLWithPath: path))
+                }
+                let found = try await tool.listIdentities(in: dirs)
+                // A tool that answered a different number of questions than it was
+                // asked has produced an array the host cannot align. Refusing beats
+                // passing on a silent off-by-one.
+                guard found.count == dirs.count else {
+                    return JSONRPCResponse(
+                        id: id, result: nil,
+                        error: .init(code: JSONRPCError.operationFailedCode,
+                                     message: "\(method): asked about \(dirs.count) directories, got \(found.count) answers"))
+                }
+                return JSONRPCResponse(
+                    id: id, result: .object(["identities": .array(found.map(encoded))]), error: nil)
+
+            default:
+                guard case .string(let path)? = params?["configDir"], !path.isEmpty else {
+                    return invalid("\(method): configDir is required")
+                }
+                let found = try await tool.showIdentity(in: URL(fileURLWithPath: path))
+                return JSONRPCResponse(
+                    id: id, result: .object(["identity": encoded(found)]), error: nil)
+            }
+        } catch {
+            return JSONRPCResponse(
+                id: id, result: nil,
+                error: .init(code: JSONRPCError.operationFailedCode,
+                             message: "\(method) failed: \(error)"))
+        }
+    }
 
     /// Runs one state-transfer operation and turns its outcome into a reply.
     ///
