@@ -34,6 +34,13 @@ public enum PluginServer {
                 capabilities["tool/listIdentities"] = .bool(true)
                 capabilities["tool/showIdentity"] = .bool(true)
             }
+            if tool is any AIToolAccounts {
+                capabilities["tool/list"] = .bool(true)
+                capabilities["tool/current"] = .bool(true)
+                capabilities["tool/setCurrent"] = .bool(true)
+                capabilities["tool/addAccount"] = .bool(true)
+                capabilities["tool/deleteAccount"] = .bool(true)
+            }
             response = JSONRPCResponse(id: request.id, result: .object([
                 "protocolVersion": .string(protocolVersion),
                 "capabilities": .object(capabilities),
@@ -76,6 +83,18 @@ public enum PluginServer {
                 break
             }
             response = await perform(request.method, on: transfer, params: request.params, id: request.id)
+
+        case "tool/list", "tool/current", "tool/setCurrent",
+             "tool/addAccount", "tool/deleteAccount":
+            guard let accounts = tool as? any AIToolAccounts else {
+                response = JSONRPCResponse(
+                    id: request.id, result: nil,
+                    error: .init(code: JSONRPCError.methodNotFoundCode,
+                                 message: "Method not found: \(request.method)"))
+                break
+            }
+            response = await account(request.method, on: accounts,
+                                     params: request.params, id: request.id)
 
         default:
             response = JSONRPCResponse(
@@ -203,6 +222,77 @@ public enum PluginServer {
                 }
                 try await tool.copyNonLoginSettings(
                     from: URL(fileURLWithPath: sourcePath), to: target)
+                return JSONRPCResponse(id: id, result: .object([:]), error: nil)
+            }
+        } catch {
+            return JSONRPCResponse(
+                id: id, result: nil,
+                error: .init(code: JSONRPCError.operationFailedCode,
+                             message: "\(method) failed: \(error)"))
+        }
+    }
+
+    /// Runs one account operation and turns its outcome into a reply.
+    ///
+    /// Three shapes, and keeping them apart is the job. Arguments that do not
+    /// permit the call are `invalidParams`. An ordinary empty answer — no
+    /// accounts, nothing pinned — is a *successful* reply carrying `null` or an
+    /// empty array. An operation that was attempted and failed is
+    /// `operationFailed`. Collapsing the last two would leave a host unable to
+    /// tell "nothing is pinned" from "the pin could not be read".
+    private static func account(
+        _ method: String,
+        on tool: any AIToolAccounts,
+        params: RPCParams?,
+        id: Int
+    ) async -> JSONRPCResponse {
+        func invalid(_ message: String) -> JSONRPCResponse {
+            JSONRPCResponse(id: id, result: nil,
+                            error: .init(code: JSONRPCError.invalidParamsCode, message: message))
+        }
+
+        func encoded(_ account: Account?) -> RPCValue {
+            guard let account else { return .null }
+            return .object([
+                "id": .string(account.id),
+                "name": .string(account.name),
+                "email": account.email.map(RPCValue.string) ?? .null,
+                "plan": account.plan.map(RPCValue.string) ?? .null,
+            ])
+        }
+
+        func requiredID() -> AccountID? {
+            guard case .string(let value)? = params?["id"], !value.isEmpty else { return nil }
+            return value
+        }
+
+        do {
+            switch method {
+            case "tool/list":
+                let accounts = try await tool.list()
+                return JSONRPCResponse(
+                    id: id, result: .object(["accounts": .array(accounts.map(encoded))]), error: nil)
+
+            case "tool/current":
+                return JSONRPCResponse(
+                    id: id, result: .object(["account": encoded(try await tool.current())]), error: nil)
+
+            case "tool/setCurrent":
+                guard let accountID = requiredID() else { return invalid("\(method): id is required") }
+                try await tool.setCurrent(id: accountID)
+                return JSONRPCResponse(id: id, result: .object([:]), error: nil)
+
+            case "tool/addAccount":
+                guard let accountID = requiredID() else { return invalid("\(method): id is required") }
+                guard case .string(let name)? = params?["name"], !name.isEmpty else {
+                    return invalid("\(method): name is required")
+                }
+                let created = try await tool.addAccount(id: accountID, name: name)
+                return JSONRPCResponse(id: id, result: .object(["account": encoded(created)]), error: nil)
+
+            default:
+                guard let accountID = requiredID() else { return invalid("\(method): id is required") }
+                try await tool.deleteAccount(id: accountID)
                 return JSONRPCResponse(id: id, result: .object([:]), error: nil)
             }
         } catch {
