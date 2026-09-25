@@ -69,6 +69,28 @@ struct PluginServerIdentityTests {
         #expect(rc["tool/showIdentity"] == .bool(true))
     }
 
+    /// The advertised set, pinned whole rather than by presence.
+    ///
+    /// A capability is a promise to a plugin author that the host calls it. The
+    /// surface drifted once already in the other direction — the README
+    /// documented `tool/accountInfo` and `tool/credentialCopy`, neither of which
+    /// ever existed — and a test that only asserts a method is *present* cannot
+    /// catch a method that should not be. Adding one has to fail here, so that
+    /// documenting it is part of adding it.
+    @Test("the advertised set is exactly the methods a host calls")
+    func advertisedSetIsExact() async throws {
+        let res = try #require(try await reply(to: "initialize", tool: Reporting()))
+        guard case .object(let obj) = try #require(res.result),
+              case .object(let caps) = try #require(obj["capabilities"]) else {
+            Issue.record("expected capabilities"); return
+        }
+        #expect(Set(caps.keys) == [
+            "tool/describe",
+            "tool/listIdentities",
+            "tool/showIdentity",
+        ])
+    }
+
     @Test("a listing's answers come back positionally, gaps included")
     func listIsPositional() async throws {
         let res = try #require(try await reply(
