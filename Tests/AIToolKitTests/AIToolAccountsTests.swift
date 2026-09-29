@@ -18,12 +18,12 @@ struct AIToolAccountsTests {
         nonisolated let id = "pool"
         nonisolated let displayName = "Pool"
 
-        private var accounts: [Account] = []
+        private var accounts: [AccountRecord] = []
         private var currentID: AccountID?
 
-        func list() async throws -> [Account] { accounts }
+        func list() async throws -> [any Account] { accounts }
 
-        func current() async throws -> Account? {
+        func current() async throws -> (any Account)? {
             currentID.flatMap { wanted in accounts.first { $0.id == wanted } }
         }
 
@@ -34,11 +34,11 @@ struct AIToolAccountsTests {
             currentID = id
         }
 
-        func addAccount(id: AccountID, name: String) async throws -> Account {
+        func addAccount(id: AccountID, name: String) async throws -> any Account {
             guard !accounts.contains(where: { $0.id == id }) else {
                 throw AccountError.alreadyExists(id)
             }
-            let account = Account(id: id, name: name)
+            let account = AccountRecord(id: id, name: name)
             accounts.append(account)
             return account
         }
@@ -49,7 +49,7 @@ struct AIToolAccountsTests {
                 throw AccountError.noSuchAccount(id)
             }
             let a = accounts[index]
-            accounts[index] = Account(id: a.id, name: a.name, email: a.email,
+            accounts[index] = AccountRecord(id: a.id, name: a.name, email: a.email,
                                       plan: a.plan, workspace: workspace)
         }
 
@@ -62,9 +62,35 @@ struct AIToolAccountsTests {
         }
     }
 
+    /// The smallest conformer, and the reason `Account` is a protocol at all.
+    /// Two properties, everything else defaulted — if this ever needs more, the
+    /// defaults extension stopped being real and the protocol stopped paying for
+    /// itself.
+    private struct Minimal: Account {
+        let id: AccountID
+        let name: String
+    }
+
+    @Test("a conformer supplies two properties; the rest default")
+    func minimalConformer() {
+        let account: any Account = Minimal(id: "a1", name: "work")
+        #expect(account.email == nil)
+        #expect(account.plan == nil)
+        #expect(account.workspace == nil)
+    }
+
+    /// A proxy that has an id and a name and fetches nothing else is a legal
+    /// account. That is what a protocol buys over a struct: a forwarding type can
+    /// conform without carrying values it does not have.
+    @Test("a record can be built from any conformer")
+    func recordFromAnyConformer() {
+        let record = AccountRecord(Minimal(id: "a1", name: "work"))
+        #expect(record == AccountRecord(id: "a1", name: "work"))
+    }
+
     @Test("an account carries what a listing needs and nothing a host invented")
     func accountFields() {
-        let account = Account(id: "a1", name: "work", email: "a@example.com", plan: "Max")
+        let account = AccountRecord(id: "a1", name: "work", email: "a@example.com", plan: "Max")
         #expect(account.id == "a1")
         #expect(account.name == "work")
         #expect(account.email == "a@example.com")
@@ -73,7 +99,7 @@ struct AIToolAccountsTests {
 
     @Test("email and plan are optional — a tool that cannot say says so")
     func factsAreOptional() {
-        let account = Account(id: "a1", name: "work")
+        let account = AccountRecord(id: "a1", name: "work")
         #expect(account.email == nil)
         #expect(account.plan == nil)
     }
@@ -99,7 +125,10 @@ struct AIToolAccountsTests {
         let pool = Pool()
         let returned = try await pool.addAccount(id: "a1", name: "work")
         let listed = try await pool.list()
-        #expect(listed == [returned])
+        // Compared through the concrete record: `any Account` is not Equatable,
+        // which is the cost of the protocol and worth paying for somewhere to put
+        // behaviour later.
+        #expect(listed.map(AccountRecord.init) == [AccountRecord(returned)])
     }
 
     @Test("the host names the account; it does not get one back that it did not ask for")
@@ -222,11 +251,13 @@ struct AIToolAccountsTests {
         }
     }
 
-    @Test("an account survives a JSON round trip unchanged")
+    /// `AccountRecord`, not `Account`: a protocol cannot be `Decodable`, because
+    /// decoding has to know what to build. The record is the wire shape.
+    @Test("an account record survives a JSON round trip unchanged")
     func codableRoundTrip() throws {
-        let account = Account(id: "a1", name: "work", email: "a@example.com",
+        let account = AccountRecord(id: "a1", name: "work", email: "a@example.com",
                               plan: "Max", workspace: "origin")
         let data = try JSONEncoder().encode(account)
-        #expect(try JSONDecoder().decode(Account.self, from: data) == account)
+        #expect(try JSONDecoder().decode(AccountRecord.self, from: data) == account)
     }
 }

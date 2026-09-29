@@ -15,16 +15,16 @@ struct PluginServerAccountTests {
         nonisolated let id = "pool"
         nonisolated let displayName = "Pool"
 
-        private var accounts: [Account]
+        private var accounts: [AccountRecord]
         private var currentID: AccountID?
 
-        init(accounts: [Account] = [], current: AccountID? = nil) {
+        init(accounts: [AccountRecord] = [], current: AccountID? = nil) {
             self.accounts = accounts
             self.currentID = current
         }
 
-        func list() async throws -> [Account] { accounts }
-        func current() async throws -> Account? {
+        func list() async throws -> [any Account] { accounts }
+        func current() async throws -> (any Account)? {
             currentID.flatMap { wanted in accounts.first { $0.id == wanted } }
         }
         func setCurrent(id: AccountID) async throws {
@@ -33,11 +33,11 @@ struct PluginServerAccountTests {
             }
             currentID = id
         }
-        func addAccount(id: AccountID, name: String) async throws -> Account {
+        func addAccount(id: AccountID, name: String) async throws -> any Account {
             guard !accounts.contains(where: { $0.id == id }) else {
                 throw AccountError.alreadyExists(id)
             }
-            let account = Account(id: id, name: name)
+            let account = AccountRecord(id: id, name: name)
             accounts.append(account)
             return account
         }
@@ -47,7 +47,7 @@ struct PluginServerAccountTests {
                 throw AccountError.noSuchAccount(id)
             }
             let a = accounts[index]
-            accounts[index] = Account(id: a.id, name: a.name, email: a.email,
+            accounts[index] = AccountRecord(id: a.id, name: a.name, email: a.email,
                                       plan: a.plan, workspace: workspace)
         }
 
@@ -120,7 +120,7 @@ struct PluginServerAccountTests {
     /// was truncated.
     @Test("an account with no email or plan sends them as null, not as missing keys")
     func optionalsAreExplicitNulls() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let obj = try object(try await reply(to: "tool/list", tool: pool))
         guard case .array(let rows) = try #require(obj["accounts"]),
               case .object(let row) = try #require(rows.first) else {
@@ -135,7 +135,7 @@ struct PluginServerAccountTests {
     @Test("every field of a fully-populated account crosses intact")
     func allFieldsCross() async throws {
         let pool = Pool(
-            accounts: [Account(id: "a1", name: "work", email: "a@example.com", plan: "Max")],
+            accounts: [AccountRecord(id: "a1", name: "work", email: "a@example.com", plan: "Max")],
             current: "a1")
         let obj = try object(try await reply(to: "tool/current", tool: pool))
         let account = try #require(obj["account"])
@@ -164,7 +164,7 @@ struct PluginServerAccountTests {
 
     @Test("a mutation the plugin refused is an error, never a success")
     func refusedAddIsAnError() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let res = try #require(try await reply(
             to: "tool/addAccount",
             params: ["id": .string("a1"), "name": .string("again")],
@@ -175,7 +175,7 @@ struct PluginServerAccountTests {
 
     @Test("pinning an unknown account fails and leaves the pin alone")
     func setCurrentUnknown() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")], current: "a1")
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")], current: "a1")
         let res = try #require(try await reply(
             to: "tool/setCurrent", params: ["id": .string("ghost")], tool: pool))
         #expect(res.error?.code == JSONRPCError.operationFailedCode)
@@ -200,7 +200,7 @@ struct PluginServerAccountTests {
 
     @Test("an unpinned account sends workspace as null, not as a missing key")
     func unpinnedWorkspaceIsNull() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let obj = try object(try await reply(to: "tool/list", tool: pool))
         guard case .array(let rows) = try #require(obj["accounts"]),
               case .object(let row) = try #require(rows.first) else {
@@ -211,7 +211,7 @@ struct PluginServerAccountTests {
 
     @Test("a pin crosses the wire and comes back on the account")
     func pinCrosses() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let res = try #require(try await reply(
             to: "tool/pin",
             params: ["id": .string("a1"), "workspace": .string("client-x")],
@@ -228,7 +228,7 @@ struct PluginServerAccountTests {
 
     @Test("pinning without a workspace is invalidParams")
     func pinNeedsAWorkspace() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let res = try #require(try await reply(
             to: "tool/pin", params: ["id": .string("a1")], tool: pool))
         #expect(res.error?.code == JSONRPCError.invalidParamsCode)
@@ -236,7 +236,7 @@ struct PluginServerAccountTests {
 
     @Test("pinning an unknown account fails and pins nothing")
     func pinUnknownFails() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let res = try #require(try await reply(
             to: "tool/pin",
             params: ["id": .string("ghost"), "workspace": .string("origin")],
@@ -247,7 +247,7 @@ struct PluginServerAccountTests {
 
     @Test("deleting removes it, and deleting again fails")
     func deleteAccount() async throws {
-        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
         let first = try #require(try await reply(
             to: "tool/deleteAccount", params: ["id": .string("a1")], tool: pool))
         #expect(first.error == nil)
