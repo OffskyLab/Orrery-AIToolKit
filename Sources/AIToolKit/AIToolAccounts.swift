@@ -13,11 +13,16 @@ public typealias AccountID = String
 /// the host depends on this type, a plugin supplies values of it, and the
 /// dependency runs from both sides into the framework.
 ///
-/// ## What is not here
+/// ## The workspace an account is pinned to
 ///
-/// A workspace. Workspaces are a management layer of their own, and which
-/// account is pinned to which workspace is a table the plugin keeps and the host
-/// can read — not a field every account carries around.
+/// An account carries its own workspace rather than the plugin keeping a table
+/// keyed the other way. The relation is one workspace per account, so the account
+/// is where it belongs, and a host that wants the accounts of one workspace
+/// filters a listing instead of asking a second question.
+///
+/// `nil` means not pinned to any. The framework has no default: "the first one",
+/// "the main one" and whatever a host calls it are host vocabulary, and a
+/// framework that shipped one of those names would be picking a side.
 ///
 /// `email` and `plan` are optional and mean "the tool could not say", which is
 /// distinct from there being no account: an API-key login is a real account with
@@ -27,12 +32,20 @@ public struct Account: Sendable, Equatable, Codable {
     public let name: String
     public let email: String?
     public let plan: String?
+    public let workspace: String?
 
-    public init(id: AccountID, name: String, email: String? = nil, plan: String? = nil) {
+    public init(
+        id: AccountID,
+        name: String,
+        email: String? = nil,
+        plan: String? = nil,
+        workspace: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.email = email
         self.plan = plan
+        self.workspace = workspace
     }
 }
 
@@ -97,6 +110,24 @@ public protocol AIToolAccounts: AITool {
     ///   exists rather than assuming its request was honoured verbatim.
     /// - Throws: ``AccountError/alreadyExists(_:)`` when the id is taken.
     func addAccount(id: AccountID, name: String) async throws -> Account
+
+    /// Pin an account to a workspace.
+    ///
+    /// Separate from ``setCurrent(id:)`` because they answer different questions.
+    /// Current is *which account is designated right now* — one answer, whatever
+    /// else is true. A pin is *where this account belongs*, and it stays put when
+    /// the current one changes. Folding the two together would make one of them
+    /// unanswerable: scoping current by workspace leaves "which account is
+    /// current" with no answer until you also say where, and the host asks that
+    /// plain question.
+    ///
+    /// The workspace is an opaque string. The plugin records it and never has to
+    /// know what a workspace is, the same way it takes a directory path without
+    /// knowing what the host keeps in it.
+    ///
+    /// - Throws: ``AccountError/noSuchAccount(_:)`` when there is no such
+    ///   account, so a pin that recorded nothing is never reported as done.
+    func pin(id: AccountID, to workspace: String) async throws
 
     /// Remove an account and everything the plugin keeps for it.
     ///

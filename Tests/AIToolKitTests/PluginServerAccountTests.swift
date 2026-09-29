@@ -41,6 +41,16 @@ struct PluginServerAccountTests {
             accounts.append(account)
             return account
         }
+
+        func pin(id: AccountID, to workspace: String) async throws {
+            guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+                throw AccountError.noSuchAccount(id)
+            }
+            let a = accounts[index]
+            accounts[index] = Account(id: a.id, name: a.name, email: a.email,
+                                      plan: a.plan, workspace: workspace)
+        }
+
         func deleteAccount(id: AccountID) async throws {
             guard let index = accounts.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
@@ -81,6 +91,7 @@ struct PluginServerAccountTests {
         }
         #expect(c["tool/list"] == nil)
         #expect(c["tool/addAccount"] == nil)
+        #expect(c["tool/pin"] == nil)
     }
 
     @Test("a tool without accounts answers method-not-found, not a silent success")
@@ -185,6 +196,53 @@ struct PluginServerAccountTests {
         let res = try #require(try await reply(
             to: "tool/addAccount", params: ["id": .string("a1")], tool: Pool()))
         #expect(res.error?.code == JSONRPCError.invalidParamsCode)
+    }
+
+    @Test("an unpinned account sends workspace as null, not as a missing key")
+    func unpinnedWorkspaceIsNull() async throws {
+        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let obj = try object(try await reply(to: "tool/list", tool: pool))
+        guard case .array(let rows) = try #require(obj["accounts"]),
+              case .object(let row) = try #require(rows.first) else {
+            Issue.record("expected one account"); return
+        }
+        #expect(row["workspace"] == .null)
+    }
+
+    @Test("a pin crosses the wire and comes back on the account")
+    func pinCrosses() async throws {
+        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let res = try #require(try await reply(
+            to: "tool/pin",
+            params: ["id": .string("a1"), "workspace": .string("client-x")],
+            tool: pool))
+        #expect(res.error == nil)
+
+        let obj = try object(try await reply(to: "tool/list", tool: pool))
+        guard case .array(let rows) = try #require(obj["accounts"]),
+              case .object(let row) = try #require(rows.first) else {
+            Issue.record("expected one account"); return
+        }
+        #expect(row["workspace"] == .string("client-x"))
+    }
+
+    @Test("pinning without a workspace is invalidParams")
+    func pinNeedsAWorkspace() async throws {
+        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let res = try #require(try await reply(
+            to: "tool/pin", params: ["id": .string("a1")], tool: pool))
+        #expect(res.error?.code == JSONRPCError.invalidParamsCode)
+    }
+
+    @Test("pinning an unknown account fails and pins nothing")
+    func pinUnknownFails() async throws {
+        let pool = Pool(accounts: [Account(id: "a1", name: "work")])
+        let res = try #require(try await reply(
+            to: "tool/pin",
+            params: ["id": .string("ghost"), "workspace": .string("origin")],
+            tool: pool))
+        #expect(res.error?.code == JSONRPCError.operationFailedCode)
+        #expect(try await pool.list().first?.workspace == nil)
     }
 
     @Test("deleting removes it, and deleting again fails")

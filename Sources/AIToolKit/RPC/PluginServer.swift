@@ -40,6 +40,7 @@ public enum PluginServer {
                 capabilities["tool/setCurrent"] = .bool(true)
                 capabilities["tool/addAccount"] = .bool(true)
                 capabilities["tool/deleteAccount"] = .bool(true)
+                capabilities["tool/pin"] = .bool(true)
             }
             response = JSONRPCResponse(id: request.id, result: .object([
                 "protocolVersion": .string(protocolVersion),
@@ -85,7 +86,7 @@ public enum PluginServer {
             response = await perform(request.method, on: transfer, params: request.params, id: request.id)
 
         case "tool/list", "tool/current", "tool/setCurrent",
-             "tool/addAccount", "tool/deleteAccount":
+             "tool/addAccount", "tool/deleteAccount", "tool/pin":
             guard let accounts = tool as? any AIToolAccounts else {
                 response = JSONRPCResponse(
                     id: request.id, result: nil,
@@ -258,6 +259,10 @@ public enum PluginServer {
                 "name": .string(account.name),
                 "email": account.email.map(RPCValue.string) ?? .null,
                 "plan": account.plan.map(RPCValue.string) ?? .null,
+                // Explicit null, like the other optionals: an absent key cannot be
+                // told apart from a reply that lost it, and "pinned nowhere" is a
+                // real state a host renders differently from "unknown".
+                "workspace": account.workspace.map(RPCValue.string) ?? .null,
             ])
         }
 
@@ -289,6 +294,14 @@ public enum PluginServer {
                 }
                 let created = try await tool.addAccount(id: accountID, name: name)
                 return JSONRPCResponse(id: id, result: .object(["account": encoded(created)]), error: nil)
+
+            case "tool/pin":
+                guard let accountID = requiredID() else { return invalid("\(method): id is required") }
+                guard case .string(let workspace)? = params?["workspace"], !workspace.isEmpty else {
+                    return invalid("\(method): workspace is required")
+                }
+                try await tool.pin(id: accountID, to: workspace)
+                return JSONRPCResponse(id: id, result: .object([:]), error: nil)
 
             default:
                 guard let accountID = requiredID() else { return invalid("\(method): id is required") }

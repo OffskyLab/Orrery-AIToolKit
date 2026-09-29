@@ -43,6 +43,16 @@ struct AIToolAccountsTests {
             return account
         }
 
+
+        func pin(id: AccountID, to workspace: String) async throws {
+            guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+                throw AccountError.noSuchAccount(id)
+            }
+            let a = accounts[index]
+            accounts[index] = Account(id: a.id, name: a.name, email: a.email,
+                                      plan: a.plan, workspace: workspace)
+        }
+
         func deleteAccount(id: AccountID) async throws {
             guard let index = accounts.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
@@ -145,9 +155,77 @@ struct AIToolAccountsTests {
         }
     }
 
+    @Test("a fresh account is pinned nowhere, and the framework invents no default")
+    func unpinnedByDefault() async throws {
+        let pool = Pool()
+        let account = try await pool.addAccount(id: "a1", name: "work")
+        #expect(account.workspace == nil,
+                "a default here would be host vocabulary shipped in the framework")
+    }
+
+    @Test("pinning is recorded on the account itself")
+    func pinIsOnTheAccount() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "work")
+        try await pool.pin(id: "a1", to: "client-x")
+        #expect(try await pool.list().first?.workspace == "client-x")
+    }
+
+    /// The accounts of one workspace are a filter over the listing, not a second
+    /// question. One workspace per account is what makes that sound.
+    @Test("a host reads a workspace's accounts by filtering the listing")
+    func workspaceMembershipIsAFilter() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "one")
+        _ = try await pool.addAccount(id: "a2", name: "two")
+        _ = try await pool.addAccount(id: "a3", name: "three")
+        try await pool.pin(id: "a1", to: "origin")
+        try await pool.pin(id: "a3", to: "origin")
+
+        let inOrigin = try await pool.list().filter { $0.workspace == "origin" }
+        #expect(inOrigin.map(\.id) == ["a1", "a3"])
+    }
+
+    @Test("re-pinning moves the account rather than adding a second home")
+    func repinMoves() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "work")
+        try await pool.pin(id: "a1", to: "origin")
+        try await pool.pin(id: "a1", to: "client-x")
+        #expect(try await pool.list().first?.workspace == "client-x")
+    }
+
+    /// The two are deliberately independent: current is "which account is
+    /// designated right now", a pin is "where this account belongs". Collapsing
+    /// them would leave "which account is current" unanswerable until the caller
+    /// also said where, and that is the plain question a host asks.
+    @Test("pinning does not change which account is current")
+    func pinAndCurrentAreIndependent() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "one")
+        _ = try await pool.addAccount(id: "a2", name: "two")
+        try await pool.setCurrent(id: "a1")
+
+        try await pool.pin(id: "a2", to: "origin")
+        #expect(try await pool.current()?.id == "a1")
+
+        try await pool.pin(id: "a1", to: "client-x")
+        #expect(try await pool.current()?.id == "a1", "the current account did not move")
+        #expect(try await pool.current()?.workspace == "client-x")
+    }
+
+    @Test("pinning an account that does not exist is an error")
+    func pinUnknown() async throws {
+        let pool = Pool()
+        await #expect(throws: AccountError.self) {
+            try await pool.pin(id: "ghost", to: "origin")
+        }
+    }
+
     @Test("an account survives a JSON round trip unchanged")
     func codableRoundTrip() throws {
-        let account = Account(id: "a1", name: "work", email: "a@example.com", plan: "Max")
+        let account = Account(id: "a1", name: "work", email: "a@example.com",
+                              plan: "Max", workspace: "origin")
         let data = try JSONEncoder().encode(account)
         #expect(try JSONDecoder().decode(Account.self, from: data) == account)
     }
