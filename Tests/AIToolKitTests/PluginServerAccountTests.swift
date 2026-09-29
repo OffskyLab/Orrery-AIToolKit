@@ -134,6 +134,28 @@ struct PluginServerAccountTests {
         #expect(c["tool/pin"] == nil)
     }
 
+    /// The other half of the pin in `PluginServerIdentityTests`. That one uses an
+    /// identity-only fixture, so it cannot see the account methods at all — a
+    /// seventh one could be added and nothing would fail. This pins the set a tool
+    /// that owns accounts advertises, so adding a method means updating a test,
+    /// which is where documenting it gets remembered.
+    @Test("the advertised set for an account-owning tool is exact")
+    func advertisedAccountSetIsExact() async throws {
+        let obj = try object(try await reply(to: "initialize", tool: Pool()))
+        guard case .object(let caps) = try #require(obj["capabilities"]) else {
+            Issue.record("expected capabilities"); return
+        }
+        #expect(Set(caps.keys) == [
+            "tool/describe",
+            "tool/list",
+            "tool/current",
+            "tool/setCurrent",
+            "tool/addAccount",
+            "tool/deleteAccount",
+            "tool/pin",
+        ])
+    }
+
     @Test("a tool without accounts answers method-not-found, not a silent success")
     func nonConformerRefuses() async throws {
         let res = try #require(try await reply(to: "tool/list", tool: Silent()))
