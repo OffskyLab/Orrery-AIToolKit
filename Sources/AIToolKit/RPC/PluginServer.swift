@@ -266,6 +266,16 @@ public enum PluginServer {
             ])
         }
 
+        /// The wire names an account; the protocol asks the account to act on
+        /// itself. Resolving the id is therefore the server's step, and it is the
+        /// only place `noSuchAccount` can now arise — every operation beyond it
+        /// is called on an account already in hand.
+        func resolve(_ accountID: AccountID, in tool: any AIToolAccounts) async throws -> any Account {
+            guard let account = try await tool.list().first(where: { $0.id == accountID })
+            else { throw AccountError.noSuchAccount(accountID) }
+            return account
+        }
+
         func requiredID() -> AccountID? {
             guard case .string(let value)? = params?["id"], !value.isEmpty else { return nil }
             return value
@@ -284,7 +294,7 @@ public enum PluginServer {
 
             case "tool/setCurrent":
                 guard let accountID = requiredID() else { return invalid("\(method): id is required") }
-                try await tool.setCurrent(id: accountID)
+                try await resolve(accountID, in: tool).makeCurrent()
                 return JSONRPCResponse(id: id, result: .object([:]), error: nil)
 
             case "tool/addAccount":
@@ -300,17 +310,12 @@ public enum PluginServer {
                 guard case .string(let workspace)? = params?["workspace"], !workspace.isEmpty else {
                     return invalid("\(method): workspace is required")
                 }
-                // The wire names an account; the protocol asks the account to
-                // pin itself. So the id is resolved here rather than a second
-                // `pin(id:to:)` existing on the tool just to carry it across.
-                guard let account = try await tool.list().first(where: { $0.id == accountID })
-                else { throw AccountError.noSuchAccount(accountID) }
-                try await account.pin(to: workspace)
+                try await resolve(accountID, in: tool).pin(to: workspace)
                 return JSONRPCResponse(id: id, result: .object([:]), error: nil)
 
             default:
                 guard let accountID = requiredID() else { return invalid("\(method): id is required") }
-                try await tool.deleteAccount(id: accountID)
+                try await resolve(accountID, in: tool).delete()
                 return JSONRPCResponse(id: id, result: .object([:]), error: nil)
             }
         } catch {

@@ -11,11 +11,11 @@ import Testing
 @Suite("AIToolAccounts")
 struct AIToolAccountsTests {
 
-    /// An account that can pin itself, because it holds the store it lives in.
+    /// An account that can act on itself, because it holds the store it lives in.
     ///
     /// This is the shape a real plugin's account takes: the value a caller holds
     /// is a view onto storage, not a detached copy. A type that could not reach
-    /// its store would have to answer `pin(to:)` by failing.
+    /// its store would have to answer every one of these by failing.
     private struct PooledAccount: Account {
         let record: AccountRecord
         let pool: Pool
@@ -28,6 +28,14 @@ struct AIToolAccountsTests {
 
         func pin(to workspace: String) async throws {
             try await pool.setWorkspace(workspace, for: record.id)
+        }
+
+        func makeCurrent() async throws {
+            try await pool.designate(record.id)
+        }
+
+        func delete() async throws {
+            try await pool.remove(record.id)
         }
     }
 
@@ -56,13 +64,6 @@ struct AIToolAccountsTests {
             currentID.flatMap { wanted in records.first { $0.id == wanted } }.map(view)
         }
 
-        func setCurrent(id: AccountID) async throws {
-            guard records.contains(where: { $0.id == id }) else {
-                throw AccountError.noSuchAccount(id)
-            }
-            currentID = id
-        }
-
         func addAccount(id: AccountID, name: String) async throws -> any Account {
             guard !records.contains(where: { $0.id == id }) else {
                 throw AccountError.alreadyExists(id)
@@ -71,6 +72,8 @@ struct AIToolAccountsTests {
             records.append(record)
             return view(record)
         }
+
+        // MARK: - What an account calls back into
 
         func setWorkspace(_ workspace: String, for id: AccountID) throws {
             guard let index = records.firstIndex(where: { $0.id == id }) else {
@@ -81,7 +84,14 @@ struct AIToolAccountsTests {
                                            plan: r.plan, workspace: workspace)
         }
 
-        func deleteAccount(id: AccountID) async throws {
+        func designate(_ id: AccountID) throws {
+            guard records.contains(where: { $0.id == id }) else {
+                throw AccountError.noSuchAccount(id)
+            }
+            currentID = id
+        }
+
+        func remove(_ id: AccountID) throws {
             guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
@@ -90,21 +100,22 @@ struct AIToolAccountsTests {
         }
     }
 
-    /// The smallest conformer: two properties and the one method.
+    /// The smallest conformer: two properties and the three operations.
     ///
-    /// `pin(to:)` has no default on purpose. A default that did nothing would be
-    /// a conformance that lies — a host would be told the pin was recorded — and
-    /// a default that threw would hide the decision from whoever wrote the type.
-    /// Identity fields still default, which is what keeps this small.
+    /// None of the operations has a default, on purpose. One that did nothing
+    /// would be a conformance that lies — a host would be told the work was done
+    /// — and one that threw would hide the decision from whoever wrote the type.
+    /// The facts still default, which is what keeps this small.
     private struct Minimal: Account {
         let id: AccountID
         let name: String
-        var pinned: [String] = []
 
         func pin(to workspace: String) async throws {}
+        func makeCurrent() async throws {}
+        func delete() async throws {}
     }
 
-    @Test("a conformer supplies id, name and pin; the facts default")
+    @Test("a conformer supplies id, name and the operations; the facts default")
     func minimalConformer() {
         let account: any Account = Minimal(id: "a1", name: "work")
         #expect(account.email == nil)
@@ -182,23 +193,27 @@ struct AIToolAccountsTests {
         let pool = Pool()
         _ = try await pool.addAccount(id: "a1", name: "work")
         _ = try await pool.addAccount(id: "a2", name: "personal")
-        try await pool.setCurrent(id: "a2")
+        try await account("a2", in: pool).makeCurrent()
         #expect(try await pool.current()?.id == "a2")
     }
 
-    @Test("pinning an account that does not exist is an error, not a silent no-op")
+    /// Designating an account you are not holding is not expressible any more —
+    /// `makeCurrent()` is on the account. What must still refuse is the store
+    /// beneath the lookup, which is where the id is resolved.
+    @Test("designating an account that does not exist is an error, not a silent no-op")
     func setCurrentUnknown() async throws {
         let pool = Pool()
         await #expect(throws: AccountError.self) {
-            try await pool.setCurrent(id: "ghost")
+            try await pool.designate("ghost")
         }
+        #expect(try await pool.current() == nil)
     }
 
     @Test("deleting removes it from the listing")
     func deleteRemoves() async throws {
         let pool = Pool()
         _ = try await pool.addAccount(id: "a1", name: "work")
-        try await pool.deleteAccount(id: "a1")
+        try await account("a1", in: pool).delete()
         #expect(try await pool.list().isEmpty)
     }
 
@@ -209,8 +224,8 @@ struct AIToolAccountsTests {
     func deleteClearsCurrent() async throws {
         let pool = Pool()
         _ = try await pool.addAccount(id: "a1", name: "work")
-        try await pool.setCurrent(id: "a1")
-        try await pool.deleteAccount(id: "a1")
+        try await account("a1", in: pool).makeCurrent()
+        try await account("a1", in: pool).delete()
         #expect(try await pool.current() == nil)
     }
 
@@ -218,7 +233,7 @@ struct AIToolAccountsTests {
     func deleteUnknown() async throws {
         let pool = Pool()
         await #expect(throws: AccountError.self) {
-            try await pool.deleteAccount(id: "ghost")
+            try await pool.remove("ghost")
         }
     }
 
@@ -271,7 +286,7 @@ struct AIToolAccountsTests {
         let pool = Pool()
         _ = try await pool.addAccount(id: "a1", name: "one")
         _ = try await pool.addAccount(id: "a2", name: "two")
-        try await pool.setCurrent(id: "a1")
+        try await account("a1", in: pool).makeCurrent()
 
         try await account("a2", in: pool).pin(to: "origin")
         #expect(try await pool.current()?.id == "a1")

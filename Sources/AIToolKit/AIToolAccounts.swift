@@ -65,6 +65,27 @@ public protocol Account: Sendable {
     /// - Throws: when the pin could not be recorded, so one that changed nothing
     ///   is never reported as done.
     func pin(to workspace: String) async throws
+
+    /// Designate this account as the tool's current one.
+    ///
+    /// On the account for the same reason as ``pin(to:)``: the caller is holding
+    /// the account it means, and a `setCurrent(id:)` on the tool would ask it to
+    /// name that account again. Reading which one is current stays on the tool,
+    /// because "which account is designated" is a question about the tool and
+    /// there may be no answer.
+    ///
+    /// - Throws: when the designation could not be recorded.
+    func makeCurrent() async throws
+
+    /// Remove this account and everything the tool keeps for it.
+    ///
+    /// If it was the current one, the conformer clears that: leaving the tool's
+    /// current account outside its own listing would have a host render a row for
+    /// something that is gone.
+    ///
+    /// - Throws: when the account could not be removed, so a delete that removed
+    ///   nothing is never reported as done.
+    func delete() async throws
 }
 
 extension Account {
@@ -135,11 +156,19 @@ public enum AccountError: Error, Sendable, Equatable {
 /// are stored, and which account is current. The host keeps no second copy to
 /// reconcile against, which is what stops the two drifting.
 ///
-/// Pinning is not here. It is on ``Account``, because it is the account's own
-/// relation — see `Account.pin(to:)`. Current *is* here, because "which account
-/// is designated right now" is a question about the tool, not about any one
-/// account. The two stay separate: a pin says where an account belongs and
-/// survives the current one changing.
+/// ## What is here, and what is on `Account`
+///
+/// Anything done *to* an account is on ``Account`` — pinning it, designating it,
+/// deleting it. A caller doing one of those is already holding the account, and
+/// a `verb(id:)` on the tool would ask it to name the thing in its hand.
+///
+/// What stays here is what only the tool can answer: which accounts exist, which
+/// one is designated, and making a new one — the last because there is nothing
+/// to call the method on until it is made.
+///
+/// A consequence worth noticing: "no such account" stops being an operation
+/// error. You cannot act on an account you are not holding, so failing to find
+/// one is a lookup that failed, earlier and somewhere else.
 ///
 /// Every method is `async` because a plugin is usually another process, so every
 /// call is a round trip. A synchronous requirement would leave a remote
@@ -158,17 +187,6 @@ public protocol AIToolAccounts: AITool {
     ///   install is in, and not worth making every caller handle as an error.
     func current() async throws -> (any Account)?
 
-    /// Designate an account as the current one.
-    ///
-    /// The host decides: it knows this shell and what the person just asked for.
-    /// The plugin persists the decision and answers ``current()`` with it.
-    ///
-    /// - Throws: ``AccountError/noSuchAccount(_:)`` when there is no such
-    ///   account. Designating something that does not exist would make the next
-    ///   ``current()`` either lie or fail, and the failure is better here, where
-    ///   the caller still knows what it asked for.
-    func setCurrent(id: AccountID) async throws
-
     /// Create an account under an id and name the host chose.
     ///
     /// Everything the account needs to exist is the plugin's to create —
@@ -180,13 +198,4 @@ public protocol AIToolAccounts: AITool {
     /// - Throws: ``AccountError/alreadyExists(_:)`` when the id is taken.
     func addAccount(id: AccountID, name: String) async throws -> any Account
 
-    /// Remove an account and everything the plugin keeps for it.
-    ///
-    /// If the deleted account was current, the plugin clears that: leaving
-    /// ``current()`` outside ``list()`` would have a host render a row for
-    /// something that is gone.
-    ///
-    /// - Throws: ``AccountError/noSuchAccount(_:)`` when there is no such
-    ///   account, so a delete that removed nothing is never reported as done.
-    func deleteAccount(id: AccountID) async throws
 }

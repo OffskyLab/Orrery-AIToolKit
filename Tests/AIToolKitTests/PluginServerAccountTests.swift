@@ -11,11 +11,11 @@ import Testing
 @Suite("PluginServer accounts")
 struct PluginServerAccountTests {
 
-    /// An account that can pin itself, because it holds the store it lives in.
+    /// An account that can act on itself, because it holds the store it lives in.
     ///
     /// This is the shape a real plugin's account takes: the value a caller holds
     /// is a view onto storage, not a detached copy. A type that could not reach
-    /// its store would have to answer `pin(to:)` by failing.
+    /// its store would have to answer every one of these by failing.
     private struct PooledAccount: Account {
         let record: AccountRecord
         let pool: Pool
@@ -28,6 +28,14 @@ struct PluginServerAccountTests {
 
         func pin(to workspace: String) async throws {
             try await pool.setWorkspace(workspace, for: record.id)
+        }
+
+        func makeCurrent() async throws {
+            try await pool.designate(record.id)
+        }
+
+        func delete() async throws {
+            try await pool.remove(record.id)
         }
     }
 
@@ -56,13 +64,6 @@ struct PluginServerAccountTests {
             currentID.flatMap { wanted in records.first { $0.id == wanted } }.map(view)
         }
 
-        func setCurrent(id: AccountID) async throws {
-            guard records.contains(where: { $0.id == id }) else {
-                throw AccountError.noSuchAccount(id)
-            }
-            currentID = id
-        }
-
         func addAccount(id: AccountID, name: String) async throws -> any Account {
             guard !records.contains(where: { $0.id == id }) else {
                 throw AccountError.alreadyExists(id)
@@ -71,6 +72,8 @@ struct PluginServerAccountTests {
             records.append(record)
             return view(record)
         }
+
+        // MARK: - What an account calls back into
 
         func setWorkspace(_ workspace: String, for id: AccountID) throws {
             guard let index = records.firstIndex(where: { $0.id == id }) else {
@@ -81,7 +84,14 @@ struct PluginServerAccountTests {
                                            plan: r.plan, workspace: workspace)
         }
 
-        func deleteAccount(id: AccountID) async throws {
+        func designate(_ id: AccountID) throws {
+            guard records.contains(where: { $0.id == id }) else {
+                throw AccountError.noSuchAccount(id)
+            }
+            currentID = id
+        }
+
+        func remove(_ id: AccountID) throws {
             guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
