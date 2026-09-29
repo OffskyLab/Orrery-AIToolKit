@@ -11,51 +11,81 @@ import Testing
 @Suite("PluginServer accounts")
 struct PluginServerAccountTests {
 
+    /// An account that can pin itself, because it holds the store it lives in.
+    ///
+    /// This is the shape a real plugin's account takes: the value a caller holds
+    /// is a view onto storage, not a detached copy. A type that could not reach
+    /// its store would have to answer `pin(to:)` by failing.
+    private struct PooledAccount: Account {
+        let record: AccountRecord
+        let pool: Pool
+
+        var id: AccountID { record.id }
+        var name: String { record.name }
+        var email: String? { record.email }
+        var plan: String? { record.plan }
+        var workspace: String? { record.workspace }
+
+        func pin(to workspace: String) async throws {
+            try await pool.setWorkspace(workspace, for: record.id)
+        }
+    }
+
+    /// A plugin that keeps its accounts in memory, standing in for one that
+    /// keeps them on disk. It exists to prove the protocol is implementable
+    /// without a host handing over any storage — which is the whole claim.
     private actor Pool: AIToolAccounts {
         nonisolated let id = "pool"
         nonisolated let displayName = "Pool"
 
-        private var accounts: [AccountRecord]
+        private var records: [AccountRecord]
         private var currentID: AccountID?
 
         init(accounts: [AccountRecord] = [], current: AccountID? = nil) {
-            self.accounts = accounts
+            self.records = accounts
             self.currentID = current
         }
 
-        func list() async throws -> [any Account] { accounts }
-        func current() async throws -> (any Account)? {
-            currentID.flatMap { wanted in accounts.first { $0.id == wanted } }
+        private func view(_ record: AccountRecord) -> PooledAccount {
+            PooledAccount(record: record, pool: self)
         }
+
+        func list() async throws -> [any Account] { records.map(view) }
+
+        func current() async throws -> (any Account)? {
+            currentID.flatMap { wanted in records.first { $0.id == wanted } }.map(view)
+        }
+
         func setCurrent(id: AccountID) async throws {
-            guard accounts.contains(where: { $0.id == id }) else {
+            guard records.contains(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
             currentID = id
         }
+
         func addAccount(id: AccountID, name: String) async throws -> any Account {
-            guard !accounts.contains(where: { $0.id == id }) else {
+            guard !records.contains(where: { $0.id == id }) else {
                 throw AccountError.alreadyExists(id)
             }
-            let account = AccountRecord(id: id, name: name)
-            accounts.append(account)
-            return account
+            let record = AccountRecord(id: id, name: name)
+            records.append(record)
+            return view(record)
         }
 
-        func pin(id: AccountID, to workspace: String) async throws {
-            guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+        func setWorkspace(_ workspace: String, for id: AccountID) throws {
+            guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
-            let a = accounts[index]
-            accounts[index] = AccountRecord(id: a.id, name: a.name, email: a.email,
-                                      plan: a.plan, workspace: workspace)
+            let r = records[index]
+            records[index] = AccountRecord(id: r.id, name: r.name, email: r.email,
+                                           plan: r.plan, workspace: workspace)
         }
 
         func deleteAccount(id: AccountID) async throws {
-            guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+            guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
-            accounts.remove(at: index)
+            records.remove(at: index)
             if currentID == id { currentID = nil }
         }
     }

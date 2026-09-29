@@ -11,6 +11,26 @@ import Testing
 @Suite("AIToolAccounts")
 struct AIToolAccountsTests {
 
+    /// An account that can pin itself, because it holds the store it lives in.
+    ///
+    /// This is the shape a real plugin's account takes: the value a caller holds
+    /// is a view onto storage, not a detached copy. A type that could not reach
+    /// its store would have to answer `pin(to:)` by failing.
+    private struct PooledAccount: Account {
+        let record: AccountRecord
+        let pool: Pool
+
+        var id: AccountID { record.id }
+        var name: String { record.name }
+        var email: String? { record.email }
+        var plan: String? { record.plan }
+        var workspace: String? { record.workspace }
+
+        func pin(to workspace: String) async throws {
+            try await pool.setWorkspace(workspace, for: record.id)
+        }
+    }
+
     /// A plugin that keeps its accounts in memory, standing in for one that
     /// keeps them on disk. It exists to prove the protocol is implementable
     /// without a host handing over any storage — which is the whole claim.
@@ -18,60 +38,73 @@ struct AIToolAccountsTests {
         nonisolated let id = "pool"
         nonisolated let displayName = "Pool"
 
-        private var accounts: [AccountRecord] = []
+        private var records: [AccountRecord]
         private var currentID: AccountID?
 
-        func list() async throws -> [any Account] { accounts }
+        init(accounts: [AccountRecord] = [], current: AccountID? = nil) {
+            self.records = accounts
+            self.currentID = current
+        }
+
+        private func view(_ record: AccountRecord) -> PooledAccount {
+            PooledAccount(record: record, pool: self)
+        }
+
+        func list() async throws -> [any Account] { records.map(view) }
 
         func current() async throws -> (any Account)? {
-            currentID.flatMap { wanted in accounts.first { $0.id == wanted } }
+            currentID.flatMap { wanted in records.first { $0.id == wanted } }.map(view)
         }
 
         func setCurrent(id: AccountID) async throws {
-            guard accounts.contains(where: { $0.id == id }) else {
+            guard records.contains(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
             currentID = id
         }
 
         func addAccount(id: AccountID, name: String) async throws -> any Account {
-            guard !accounts.contains(where: { $0.id == id }) else {
+            guard !records.contains(where: { $0.id == id }) else {
                 throw AccountError.alreadyExists(id)
             }
-            let account = AccountRecord(id: id, name: name)
-            accounts.append(account)
-            return account
+            let record = AccountRecord(id: id, name: name)
+            records.append(record)
+            return view(record)
         }
 
-
-        func pin(id: AccountID, to workspace: String) async throws {
-            guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+        func setWorkspace(_ workspace: String, for id: AccountID) throws {
+            guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
-            let a = accounts[index]
-            accounts[index] = AccountRecord(id: a.id, name: a.name, email: a.email,
-                                      plan: a.plan, workspace: workspace)
+            let r = records[index]
+            records[index] = AccountRecord(id: r.id, name: r.name, email: r.email,
+                                           plan: r.plan, workspace: workspace)
         }
 
         func deleteAccount(id: AccountID) async throws {
-            guard let index = accounts.firstIndex(where: { $0.id == id }) else {
+            guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
             }
-            accounts.remove(at: index)
+            records.remove(at: index)
             if currentID == id { currentID = nil }
         }
     }
 
-    /// The smallest conformer, and the reason `Account` is a protocol at all.
-    /// Two properties, everything else defaulted — if this ever needs more, the
-    /// defaults extension stopped being real and the protocol stopped paying for
-    /// itself.
+    /// The smallest conformer: two properties and the one method.
+    ///
+    /// `pin(to:)` has no default on purpose. A default that did nothing would be
+    /// a conformance that lies — a host would be told the pin was recorded — and
+    /// a default that threw would hide the decision from whoever wrote the type.
+    /// Identity fields still default, which is what keeps this small.
     private struct Minimal: Account {
         let id: AccountID
         let name: String
+        var pinned: [String] = []
+
+        func pin(to workspace: String) async throws {}
     }
 
-    @Test("a conformer supplies two properties; the rest default")
+    @Test("a conformer supplies id, name and pin; the facts default")
     func minimalConformer() {
         let account: any Account = Minimal(id: "a1", name: "work")
         #expect(account.email == nil)
@@ -86,6 +119,11 @@ struct AIToolAccountsTests {
     func recordFromAnyConformer() {
         let record = AccountRecord(Minimal(id: "a1", name: "work"))
         #expect(record == AccountRecord(id: "a1", name: "work"))
+    }
+
+    /// Reaching an account and asking it to pin itself — the path a host takes.
+    private func account(_ id: AccountID, in pool: Pool) async throws -> any Account {
+        try #require(try await pool.list().first { $0.id == id })
     }
 
     @Test("an account carries what a listing needs and nothing a host invented")
@@ -196,7 +234,7 @@ struct AIToolAccountsTests {
     func pinIsOnTheAccount() async throws {
         let pool = Pool()
         _ = try await pool.addAccount(id: "a1", name: "work")
-        try await pool.pin(id: "a1", to: "client-x")
+        try await account("a1", in: pool).pin(to: "client-x")
         #expect(try await pool.list().first?.workspace == "client-x")
     }
 
@@ -208,8 +246,8 @@ struct AIToolAccountsTests {
         _ = try await pool.addAccount(id: "a1", name: "one")
         _ = try await pool.addAccount(id: "a2", name: "two")
         _ = try await pool.addAccount(id: "a3", name: "three")
-        try await pool.pin(id: "a1", to: "origin")
-        try await pool.pin(id: "a3", to: "origin")
+        try await account("a1", in: pool).pin(to: "origin")
+        try await account("a3", in: pool).pin(to: "origin")
 
         let inOrigin = try await pool.list().filter { $0.workspace == "origin" }
         #expect(inOrigin.map(\.id) == ["a1", "a3"])
@@ -219,8 +257,8 @@ struct AIToolAccountsTests {
     func repinMoves() async throws {
         let pool = Pool()
         _ = try await pool.addAccount(id: "a1", name: "work")
-        try await pool.pin(id: "a1", to: "origin")
-        try await pool.pin(id: "a1", to: "client-x")
+        try await account("a1", in: pool).pin(to: "origin")
+        try await account("a1", in: pool).pin(to: "client-x")
         #expect(try await pool.list().first?.workspace == "client-x")
     }
 
@@ -235,20 +273,24 @@ struct AIToolAccountsTests {
         _ = try await pool.addAccount(id: "a2", name: "two")
         try await pool.setCurrent(id: "a1")
 
-        try await pool.pin(id: "a2", to: "origin")
+        try await account("a2", in: pool).pin(to: "origin")
         #expect(try await pool.current()?.id == "a1")
 
-        try await pool.pin(id: "a1", to: "client-x")
+        try await account("a1", in: pool).pin(to: "client-x")
         #expect(try await pool.current()?.id == "a1", "the current account did not move")
         #expect(try await pool.current()?.workspace == "client-x")
     }
 
+    /// Resolving an id to an account is the caller's step now — `pin` lives on the
+    /// account, so there is nothing to call for one that does not exist. What must
+    /// still refuse is the store beneath it.
     @Test("pinning an account that does not exist is an error")
     func pinUnknown() async throws {
         let pool = Pool()
         await #expect(throws: AccountError.self) {
-            try await pool.pin(id: "ghost", to: "origin")
+            try await pool.setWorkspace("origin", for: "ghost")
         }
+        #expect(try await pool.list().isEmpty)
     }
 
     /// `AccountRecord`, not `Account`: a protocol cannot be `Decodable`, because

@@ -300,7 +300,12 @@ public enum PluginServer {
                 guard case .string(let workspace)? = params?["workspace"], !workspace.isEmpty else {
                     return invalid("\(method): workspace is required")
                 }
-                try await tool.pin(id: accountID, to: workspace)
+                // The wire names an account; the protocol asks the account to
+                // pin itself. So the id is resolved here rather than a second
+                // `pin(id:to:)` existing on the tool just to carry it across.
+                guard let account = try await tool.list().first(where: { $0.id == accountID })
+                else { throw AccountError.noSuchAccount(accountID) }
+                try await account.pin(to: workspace)
                 return JSONRPCResponse(id: id, result: .object([:]), error: nil)
 
             default:

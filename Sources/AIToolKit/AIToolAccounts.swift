@@ -46,6 +46,25 @@ public protocol Account: Sendable {
     var email: String? { get }
     var plan: String? { get }
     var workspace: String? { get }
+
+    /// Pin this account to a workspace.
+    ///
+    /// On the account rather than on ``AIToolAccounts`` because it is the
+    /// account's own relation: one workspace per account, and the account is what
+    /// moves. A `pin(id:to:)` on the tool would make the caller name an account it
+    /// is already holding.
+    ///
+    /// This is also what the protocol was for. An `Account` that only carried
+    /// properties could have been a struct; behaviour arriving on it is the case
+    /// a struct would have turned into a breaking change.
+    ///
+    /// The workspace is an opaque string. A conformer records it and never has to
+    /// know what a workspace is, the same way it takes a directory path without
+    /// knowing what the host keeps in it.
+    ///
+    /// - Throws: when the pin could not be recorded, so one that changed nothing
+    ///   is never reported as done.
+    func pin(to workspace: String) async throws
 }
 
 extension Account {
@@ -57,10 +76,15 @@ extension Account {
 /// An account's fields, in the shape they take on the wire.
 ///
 /// The concrete `Codable` type ``Account`` deliberately is not: a protocol cannot
-/// be `Decodable`, because decoding has to know what to build. Serialization
-/// belongs here so the interface stays clean enough for a proxy to conform to it,
-/// and so a host that decoded a reply has something to hand back as an `Account`.
-public struct AccountRecord: Account, Codable, Equatable {
+/// be `Decodable`, because decoding has to know what to build.
+///
+/// It does **not** conform to ``Account``, exactly as ``ToolDescription`` does not
+/// conform to ``AITool``. An account can be pinned, and a decoded value has
+/// nothing to pin *with* — no store, no connection. A record that conformed would
+/// have to answer `pin(to:)` by failing, which is a conformance that lies. The
+/// types that conform are the ones that can act: a plugin's own account, and a
+/// host-side proxy holding the connection back to it.
+public struct AccountRecord: Codable, Sendable, Equatable {
     public let id: AccountID
     public let name: String
     public let email: String?
@@ -81,6 +105,7 @@ public struct AccountRecord: Account, Codable, Equatable {
         self.workspace = workspace
     }
 
+    /// A snapshot of any account, for sending or storing.
     public init(_ account: any Account) {
         self.init(id: account.id, name: account.name, email: account.email,
                   plan: account.plan, workspace: account.workspace)
@@ -109,6 +134,12 @@ public enum AccountError: Error, Sendable, Equatable {
 /// behind that: where accounts live, what a directory contains, how credentials
 /// are stored, and which account is current. The host keeps no second copy to
 /// reconcile against, which is what stops the two drifting.
+///
+/// Pinning is not here. It is on ``Account``, because it is the account's own
+/// relation — see `Account.pin(to:)`. Current *is* here, because "which account
+/// is designated right now" is a question about the tool, not about any one
+/// account. The two stay separate: a pin says where an account belongs and
+/// survives the current one changing.
 ///
 /// Every method is `async` because a plugin is usually another process, so every
 /// call is a round trip. A synchronous requirement would leave a remote
@@ -148,24 +179,6 @@ public protocol AIToolAccounts: AITool {
     ///   exists rather than assuming its request was honoured verbatim.
     /// - Throws: ``AccountError/alreadyExists(_:)`` when the id is taken.
     func addAccount(id: AccountID, name: String) async throws -> any Account
-
-    /// Pin an account to a workspace.
-    ///
-    /// Separate from ``setCurrent(id:)`` because they answer different questions.
-    /// Current is *which account is designated right now* — one answer, whatever
-    /// else is true. A pin is *where this account belongs*, and it stays put when
-    /// the current one changes. Folding the two together would make one of them
-    /// unanswerable: scoping current by workspace leaves "which account is
-    /// current" with no answer until you also say where, and the host asks that
-    /// plain question.
-    ///
-    /// The workspace is an opaque string. The plugin records it and never has to
-    /// know what a workspace is, the same way it takes a directory path without
-    /// knowing what the host keeps in it.
-    ///
-    /// - Throws: ``AccountError/noSuchAccount(_:)`` when there is no such
-    ///   account, so a pin that recorded nothing is never reported as done.
-    func pin(id: AccountID, to workspace: String) async throws
 
     /// Remove an account and everything the plugin keeps for it.
     ///
