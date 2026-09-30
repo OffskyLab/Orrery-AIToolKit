@@ -37,6 +37,10 @@ struct AIToolAccountsTests {
         func delete() async throws {
             try await pool.remove(record.id)
         }
+
+        func adoptLogin(from directory: URL) async throws {
+            try await pool.adopt(directory, for: record.id)
+        }
     }
 
     /// A plugin that keeps its accounts in memory, standing in for one that
@@ -46,8 +50,11 @@ struct AIToolAccountsTests {
         nonisolated let id = "pool"
         nonisolated let displayName = "Pool"
 
+        enum PoolError: Error { case noLoginFound }
+
         private var records: [AccountRecord]
         private var currentID: AccountID?
+        private(set) var adopted: Set<AccountID> = []
 
         init(accounts: [AccountRecord] = [], current: AccountID? = nil) {
             self.records = accounts
@@ -91,6 +98,21 @@ struct AIToolAccountsTests {
             currentID = id
         }
 
+
+        /// Stands in for a tool taking a credential out of a directory. The
+        /// marker file is this fixture's "credential": present means a login
+        /// happened there, absent means nothing to take.
+        func adopt(_ directory: URL, for id: AccountID) throws {
+            guard records.contains(where: { $0.id == id }) else {
+                throw AccountError.noSuchAccount(id)
+            }
+            let credential = directory.appendingPathComponent("credential")
+            guard FileManager.default.fileExists(atPath: credential.path) else {
+                throw PoolError.noLoginFound
+            }
+            adopted.insert(id)
+        }
+
         func remove(_ id: AccountID) throws {
             guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
@@ -100,7 +122,7 @@ struct AIToolAccountsTests {
         }
     }
 
-    /// The smallest conformer: two properties and the three operations.
+    /// The smallest conformer: two properties and the four operations.
     ///
     /// None of the operations has a default, on purpose. One that did nothing
     /// would be a conformance that lies — a host would be told the work was done
@@ -113,6 +135,7 @@ struct AIToolAccountsTests {
         func pin(to workspace: String) async throws {}
         func makeCurrent() async throws {}
         func delete() async throws {}
+        func adoptLogin(from directory: URL) async throws {}
     }
 
     @Test("a conformer supplies id, name and the operations; the facts default")
@@ -135,6 +158,60 @@ struct AIToolAccountsTests {
     /// Reaching an account and asking it to pin itself — the path a host takes.
     private func account(_ id: AccountID, in pool: Pool) async throws -> any Account {
         try #require(try await pool.list().first { $0.id == id })
+    }
+
+    /// A directory a tool has just logged into, and one it has not.
+    private func stagingDir(withLogin: Bool) throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("adopt-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        if withLogin {
+            try Data("token".utf8).write(to: url.appendingPathComponent("credential"))
+        }
+        return url
+    }
+
+    @Test("an account takes the login out of a directory the host hands over")
+    func adoptsALogin() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "work")
+        let dir = try stagingDir(withLogin: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        try await account("a1", in: pool).adoptLogin(from: dir)
+        #expect(try await pool.adopted.contains("a1"))
+    }
+
+    /// The failure that matters. A login that did not arrive must never be
+    /// reported as done — reporting it hands someone an account they believe
+    /// works and will not find out about until they try to use it.
+    @Test("a directory with no login is an error, not a quiet success")
+    func adoptingNothingFails() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "work")
+        let dir = try stagingDir(withLogin: false)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        await #expect(throws: (any Error).self) {
+            try await account("a1", in: pool).adoptLogin(from: dir)
+        }
+        #expect(try await pool.adopted.isEmpty)
+    }
+
+    /// The host's directory is a throwaway — it may be gone the moment the call
+    /// returns — so a conformer has to take what it needs rather than remember
+    /// where it was.
+    @Test("the account keeps the login after the directory is gone")
+    func adoptedLoginOutlivesTheDirectory() async throws {
+        let pool = Pool()
+        _ = try await pool.addAccount(id: "a1", name: "work")
+        let dir = try stagingDir(withLogin: true)
+
+        try await account("a1", in: pool).adoptLogin(from: dir)
+        try FileManager.default.removeItem(at: dir)
+
+        #expect(try await pool.adopted.contains("a1"))
+        #expect(try await pool.list().map(\.id) == ["a1"])
     }
 
     @Test("an account carries what a listing needs and nothing a host invented")

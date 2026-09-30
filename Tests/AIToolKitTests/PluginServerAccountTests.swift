@@ -37,6 +37,10 @@ struct PluginServerAccountTests {
         func delete() async throws {
             try await pool.remove(record.id)
         }
+
+        func adoptLogin(from directory: URL) async throws {
+            try await pool.adopt(directory, for: record.id)
+        }
     }
 
     /// A plugin that keeps its accounts in memory, standing in for one that
@@ -46,8 +50,11 @@ struct PluginServerAccountTests {
         nonisolated let id = "pool"
         nonisolated let displayName = "Pool"
 
+        enum PoolError: Error { case noLoginFound }
+
         private var records: [AccountRecord]
         private var currentID: AccountID?
+        private(set) var adopted: Set<AccountID> = []
 
         init(accounts: [AccountRecord] = [], current: AccountID? = nil) {
             self.records = accounts
@@ -91,6 +98,21 @@ struct PluginServerAccountTests {
             currentID = id
         }
 
+
+        /// Stands in for a tool taking a credential out of a directory. The
+        /// marker file is this fixture's "credential": present means a login
+        /// happened there, absent means nothing to take.
+        func adopt(_ directory: URL, for id: AccountID) throws {
+            guard records.contains(where: { $0.id == id }) else {
+                throw AccountError.noSuchAccount(id)
+            }
+            let credential = directory.appendingPathComponent("credential")
+            guard FileManager.default.fileExists(atPath: credential.path) else {
+                throw PoolError.noLoginFound
+            }
+            adopted.insert(id)
+        }
+
         func remove(_ id: AccountID) throws {
             guard let index = records.firstIndex(where: { $0.id == id }) else {
                 throw AccountError.noSuchAccount(id)
@@ -132,6 +154,7 @@ struct PluginServerAccountTests {
         #expect(c["tool/list"] == nil)
         #expect(c["tool/addAccount"] == nil)
         #expect(c["tool/pin"] == nil)
+        #expect(c["tool/adoptLogin"] == nil)
     }
 
     @Test("a tool without accounts answers method-not-found, not a silent success")
@@ -283,6 +306,49 @@ struct PluginServerAccountTests {
             tool: pool))
         #expect(res.error?.code == JSONRPCError.operationFailedCode)
         #expect(try await pool.list().first?.workspace == nil)
+    }
+
+    @Test("a directory crosses the wire and the login is taken")
+    func adoptLoginCrosses() async throws {
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("adopt-wire-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("token".utf8).write(to: dir.appendingPathComponent("credential"))
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let res = try #require(try await reply(
+            to: "tool/adoptLogin",
+            params: ["id": .string("a1"), "directory": .string(dir.path)],
+            tool: pool))
+        #expect(res.error == nil)
+        #expect(try await pool.adopted.contains("a1"))
+    }
+
+    /// The one that must not come back clean. A host told the login succeeded
+    /// goes on to report an account ready to use.
+    @Test("a directory with no login comes back as a failure")
+    func adoptingNothingIsAnError() async throws {
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("adopt-wire-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let res = try #require(try await reply(
+            to: "tool/adoptLogin",
+            params: ["id": .string("a1"), "directory": .string(dir.path)],
+            tool: pool))
+        #expect(res.error?.code == JSONRPCError.operationFailedCode)
+        #expect(try await pool.adopted.isEmpty)
+    }
+
+    @Test("adopting without a directory is invalidParams")
+    func adoptNeedsADirectory() async throws {
+        let pool = Pool(accounts: [AccountRecord(id: "a1", name: "work")])
+        let res = try #require(try await reply(
+            to: "tool/adoptLogin", params: ["id": .string("a1")], tool: pool))
+        #expect(res.error?.code == JSONRPCError.invalidParamsCode)
     }
 
     @Test("deleting removes it, and deleting again fails")

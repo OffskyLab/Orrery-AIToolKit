@@ -41,6 +41,7 @@ public enum PluginServer {
                 capabilities["tool/addAccount"] = .bool(true)
                 capabilities["tool/deleteAccount"] = .bool(true)
                 capabilities["tool/pin"] = .bool(true)
+                capabilities["tool/adoptLogin"] = .bool(true)
             }
             response = JSONRPCResponse(id: request.id, result: .object([
                 "protocolVersion": .string(protocolVersion),
@@ -86,7 +87,7 @@ public enum PluginServer {
             response = await perform(request.method, on: transfer, params: request.params, id: request.id)
 
         case "tool/list", "tool/current", "tool/setCurrent",
-             "tool/addAccount", "tool/deleteAccount", "tool/pin":
+             "tool/addAccount", "tool/deleteAccount", "tool/pin", "tool/adoptLogin":
             guard let accounts = tool as? any AIToolAccounts else {
                 response = JSONRPCResponse(
                     id: request.id, result: nil,
@@ -304,6 +305,15 @@ public enum PluginServer {
                 }
                 let created = try await tool.addAccount(id: accountID, name: name)
                 return JSONRPCResponse(id: id, result: .object(["account": encoded(created)]), error: nil)
+
+            case "tool/adoptLogin":
+                guard let accountID = requiredID() else { return invalid("\(method): id is required") }
+                guard case .string(let path)? = params?["directory"], !path.isEmpty else {
+                    return invalid("\(method): directory is required")
+                }
+                try await resolve(accountID, in: tool)
+                    .adoptLogin(from: URL(fileURLWithPath: path))
+                return JSONRPCResponse(id: id, result: .object([:]), error: nil)
 
             case "tool/pin":
                 guard let accountID = requiredID() else { return invalid("\(method): id is required") }
