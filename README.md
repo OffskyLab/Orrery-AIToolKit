@@ -90,6 +90,18 @@ classDiagram
         +coloredTag : String
     }
 
+    class AIToolIdentityReporting {
+        <<protocol>>
+        +listIdentities(in configDirs) [LoginIdentity?]
+        +showIdentity(in configDir) LoginIdentity?
+    }
+
+    class LoginIdentity {
+        <<struct>>
+        +email : String?
+        +plan : String?
+    }
+
     class AIToolRegistry {
         <<final class>>
         -storage : Mutex
@@ -120,6 +132,8 @@ classDiagram
     }
 
     AITool --|> Sendable : refines
+    AIToolIdentityReporting --|> AITool : refines
+    AIToolIdentityReporting ..> LoginIdentity : returns
     AIToolDefaults ..|> AITool : supplies defaults for
     AIToolRegistry o-- AITool : holds many
     AIToolRegistry ..> RegistrationError : throws
@@ -130,6 +144,12 @@ Only `id` and `displayName` have no default, so those two are what a conformer
 must answer. `supportsSetup` and `coloredTag` are derived and are not
 requirements at all — a detail with teeth, since extension members do not
 dispatch dynamically.
+
+Everything on `AITool` is a fact the tool states about itself.
+`AIToolIdentityReporting` is the one thing a host *asks* it to do, and it is a
+separate protocol so that absence is something a host can see: a tool a host only
+ever lists is a legal `AITool` and does not conform here. A capability whose
+answer would have to be a silent no-op does not belong on `AITool`.
 
 ## Conforming a tool
 
@@ -254,13 +274,19 @@ classDiagram
     class AITool {
         <<protocol>>
         +id : String
-        +accountInfo(configDir) AccountInfo
+    }
+
+    class AIToolIdentityReporting {
+        <<protocol>>
+        +listIdentities(in configDirs) [LoginIdentity?]
+        +showIdentity(in configDir) LoginIdentity?
     }
 
     class LocalTool {
         <<struct>>
         +id : String
-        +accountInfo(configDir) AccountInfo
+        +listIdentities(in configDirs) [LoginIdentity?]
+        +showIdentity(in configDir) LoginIdentity?
     }
 
     class RemoteAITool {
@@ -268,7 +294,7 @@ classDiagram
         -connection : JSONRPCConnection
         -cached : Description
         +id : String
-        +accountInfo(configDir) AccountInfo
+        +identityReporting : AIToolIdentityReporting?
     }
 
     class JSONRPCConnection {
@@ -281,15 +307,18 @@ classDiagram
         <<process>>
         +initialize()
         +tool_describe()
-        +tool_accountInfo()
+        +tool_listIdentities()
+        +tool_showIdentity()
     }
 
-    LocalTool ..|> AITool
+    AIToolIdentityReporting --|> AITool : refines
+    LocalTool ..|> AIToolIdentityReporting
     RemoteAITool ..|> AITool
     RemoteAITool o-- JSONRPCConnection
     JSONRPCConnection ..> PluginProcess : JSON-RPC 2.0
 
     note for RemoteAITool "Same protocol as the local struct — a call site holding 'any AITool' cannot tell which one it has."
+    note for AIToolIdentityReporting "A local tool answers by conforming; a remote one carries an optional, because conformance cannot depend on what a process said at runtime."
 ```
 
 Two consequences fall out. Built-in and third-party tools take the *same*
@@ -385,18 +414,19 @@ sequenceDiagram
     participant H as Host
     participant P as Plugin
 
-    H->>P: tool/accountInfo
+    H->>P: tool/listIdentities
     P--)H: timeout
     Note over H: read — degrade<br/>list the account, leave email blank
-
-    H->>P: tool/credentialCopy
-    P--)H: timeout
-    Note over H: write — abort<br/>never mark the account seeded
 ```
 
-Listing accounts is worth doing with one field missing. Recording a credential
-as copied when it may not have been is the failure that looks like success,
-and costs someone an account they believe is safe.
+Listing accounts is worth doing with one field missing.
+
+The other half of the rule has nothing to apply to yet: every method in the
+surface today is a read. It is written down because it decides the shape of the
+first write that gets added — recording a credential as copied when it may not
+have been is the failure that looks like success, and costs someone an account
+they believe is safe. A write must therefore be able to report *attempted and
+failed* distinctly from *nothing to do*.
 
 A socket earns its place when the peer outlives the caller or serves several
 callers at once. Which caller that is should be established by measuring a
