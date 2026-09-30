@@ -77,6 +77,28 @@ public protocol Account: Sendable {
     /// - Throws: when the designation could not be recorded.
     func makeCurrent() async throws
 
+    /// Take the login sitting in this directory and make it this account's.
+    ///
+    /// The host runs the tool's login — it knows how to give a subprocess a
+    /// terminal, and it took `authLoginCommand` and the config-dir variable off
+    /// this tool's own description to do it. What it does not know is what the
+    /// tool then wrote, or where an account's credentials belong. So it hands
+    /// over the directory the login happened in and stops.
+    ///
+    /// Everything after that is the tool's: which file holds the credential, or
+    /// which entry in a platform keychain, how the entry is named, and what else
+    /// travels with it. None of that has ever been expressible as a path, which
+    /// is why the host passing one and asking no further is the whole of the
+    /// boundary here.
+    ///
+    /// - Parameter directory: a config directory the tool has just logged into.
+    ///   Its lifetime is the host's, and it may be gone the moment this returns,
+    ///   so a conformer copies rather than referring to it.
+    /// - Throws: when no usable login was found there, or it could not be taken.
+    ///   A login that did not arrive must never be reported as done — that is the
+    ///   failure that hands someone an account they believe works.
+    func adoptLogin(from directory: URL) async throws
+
     /// Remove this account and everything the tool keeps for it.
     ///
     /// If it was the current one, the conformer clears that: leaving the tool's
