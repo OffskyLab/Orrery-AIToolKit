@@ -158,10 +158,16 @@ struct PluginServerAccountTests {
     }
 
     /// The other half of the pin in `PluginServerIdentityTests`. That one uses an
-    /// identity-only fixture, so it cannot see the account methods at all — a
-    /// seventh one could be added and nothing would fail. This pins the set a tool
-    /// that owns accounts advertises, so adding a method means updating a test,
-    /// which is where documenting it gets remembered.
+    /// identity-only fixture, so it cannot see the account methods at all — one
+    /// more could be added and nothing would fail. This pins the set a tool that
+    /// owns accounts advertises, so adding a method means updating a test, which
+    /// is where documenting it gets remembered.
+    ///
+    /// It has already earned that once. Two pull requests touched this list
+    /// independently — one rebased onto a main that had six account methods, the
+    /// other adding a seventh — and git merged both without a conflict, because
+    /// neither edit overlapped the other textually. The list was simply a version
+    /// behind, and nothing but this test could tell.
     @Test("the advertised set for an account-owning tool is exact")
     func advertisedAccountSetIsExact() async throws {
         let obj = try object(try await reply(to: "initialize", tool: Pool()))
@@ -176,6 +182,7 @@ struct PluginServerAccountTests {
             "tool/addAccount",
             "tool/deleteAccount",
             "tool/pin",
+            "tool/adoptLogin",
         ])
     }
 
